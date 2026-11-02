@@ -76,6 +76,8 @@ def problem(raw: str | os.PathLike | None) -> tuple[str, str] | None:
                 if os.name == "nt" else "Type the whole path, starting with /, like /data/strata-models. Nothing was downloaded or changed.")
     full = os.path.abspath(path)
     for root in _system_roots():
+        if _inside(full, "/dev/shm"):                                                 # allow RAM-disk storage in /dev/shm
+            continue
         if _inside(full, root) and not _inside(full, os.path.expanduser("~")):         # the running user's own home is theirs (root's /root included)
             return (f"{full} is a system folder, and Strata should not keep model files there.", _next())
     try:
