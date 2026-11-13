@@ -159,6 +159,8 @@ int main() {
     arch("NVIDIA A100-PCIE-40GB", 8, 0, 86, "make ARCH=80");
     arch("NVIDIA GeForce RTX 4090", 8, 9, 89, "");             // a build for its arch: refused only by what else it lacks
     arch("NVIDIA GeForce RTX 3080", 8, 6, 86, "");             // 68 SMs
+    arch("NVIDIA GeForce RTX 2080 Ti", 7, 5, 75, "");          // Turing SM75
+    arch("NVIDIA GeForce RTX 2080 Ti", 7, 5, 86, "make ARCH=75");
 
     bdf("0000:3B:00.0", "0000:3b:00.0");        // cudaDeviceGetPCIBusId
     bdf("00000000:3B:00.0", "0000:3b:00.0");    // nvidia-smi
