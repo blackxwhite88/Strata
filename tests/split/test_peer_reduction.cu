@@ -134,7 +134,7 @@ __global__ void __launch_bounds__(kThreads) ar_peer_exact_kernel(
 __global__ void __launch_bounds__(kThreads) sfnx_peer_ring_step_kernel(
     float* __restrict__ x, int n,
     float* __restrict__ peer_ring_in, const float* __restrict__ my_ring_in,
-    volatile unsigned* __restrict__ peer_flag, const volatile unsigned* __restrict__ my_flag,
+    volatile unsigned* __restrict__ peer_flags, const volatile unsigned* __restrict__ my_flags,
     int mi, unsigned seq) {
 
     for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
@@ -143,10 +143,10 @@ __global__ void __launch_bounds__(kThreads) sfnx_peer_ring_step_kernel(
     __threadfence_system();
     __syncthreads();
 
-    if (blockIdx.x == 0 && threadIdx.x == 0) {
-        *peer_flag = seq;
+    if (threadIdx.x == 0) {
+        peer_flags[blockIdx.x] = seq;
         __threadfence_system();
-        while (*my_flag < seq) {
+        while (my_flags[blockIdx.x] < seq) {
             // spin wait
         }
     }
@@ -246,6 +246,19 @@ int main(int argc, char** argv) {
     CUDA_CK(cudaEventCreate(&ev_start));
     CUDA_CK(cudaEventCreate(&ev_stop));
 
+    // Initialize test inputs on devices with non-zero pseudo-random floats
+    std::vector<float> init_data0(max_elements), init_data1(max_elements);
+    for (size_t i = 0; i < max_elements; ++i) {
+        init_data0[i] = ((float)(i % 100) - 50.0f) / 100.0f;
+        init_data1[i] = ((float)((i + 17) % 100) - 50.0f) / 100.0f;
+    }
+    for (int s = 0; s < 2; ++s) {
+        CUDA_CK(cudaSetDevice(0));
+        CUDA_CK(cudaMemcpy(res[0].d_x[s], init_data0.data(), max_elements * sizeof(float), cudaMemcpyHostToDevice));
+        CUDA_CK(cudaSetDevice(1));
+        CUDA_CK(cudaMemcpy(res[1].d_x[s], init_data1.data(), max_elements * sizeof(float), cudaMemcpyHostToDevice));
+    }
+
     std::cout << "\nStarting benchmark across token counts and transports...\n";
 
     for (int tokens : token_cases) {
@@ -258,6 +271,13 @@ int main(int argc, char** argv) {
                   << " (" << std::setw(8) << n << " floats, "
                   << std::fixed << std::setprecision(2)
                   << (bytes / (1024.0 * 1024.0)) << " MiB) ---\n";
+
+        // Reset flags before Host Transport
+        for (int r = 0; r < 2; ++r) {
+            for (int s = 0; s < 2; ++s) {
+                *h_flag[r][s] = 0;
+            }
+        }
 
         // Benchmark Host Transport
         {
@@ -290,8 +310,50 @@ int main(int argc, char** argv) {
                       << us_per_step << " us/step | Bandwidth: " << std::setw(5) << std::setprecision(1) << bw_gbs << " GB/s\n";
         }
 
+        // Benchmark sFNX Device-Memory Peer Ring
+        if (can01 && can10) {
+            for (int r = 0; r < 2; ++r) {
+                CUDA_CK(cudaSetDevice(r));
+                CUDA_CK(cudaMemset(res[r].d_flags[0], 0, kPeerBlocks * sizeof(unsigned)));
+                CUDA_CK(cudaMemset(res[r].d_flags[1], 0, kPeerBlocks * sizeof(unsigned)));
+            }
+            CUDA_CK(cudaSetDevice(0));
+            CUDA_CK(cudaEventRecord(ev_start, res[0].stream));
+            for (int t = 0; t < chained_trials; ++t) {
+                int slot = t % 2;
+                unsigned seq = (unsigned)(t + 1);
+                for (int r = 0; r < 2; ++r) {
+                    CUDA_CK(cudaSetDevice(r));
+                    int peer = 1 - r;
+                    sfnx_peer_ring_step_kernel<<<kPeerBlocks, kThreads, 0, res[r].stream>>>(
+                        res[r].d_x[slot], (int)n,
+                        res[peer].d_ring[slot], res[r].d_ring[slot],
+                        res[peer].d_flags[slot], res[r].d_flags[slot],
+                        r, seq
+                    );
+                }
+            }
+            CUDA_CK(cudaSetDevice(0));
+            CUDA_CK(cudaEventRecord(ev_stop, res[0].stream));
+            CUDA_CK(cudaDeviceSynchronize());
+            CUDA_CK(cudaSetDevice(1));
+            CUDA_CK(cudaDeviceSynchronize());
+
+            float ms = 0.f;
+            CUDA_CK(cudaEventElapsedTime(&ms, ev_start, ev_stop));
+            float us_per_step = (ms * 1000.f) / chained_trials;
+            double bw_gbs = (2.0 * bytes * 1e-9) / (us_per_step * 1e-6);
+            std::cout << "  [sFNX PEER RING]    Avg: " << std::setw(7) << std::fixed << std::setprecision(1)
+                      << us_per_step << " us/step | Bandwidth: " << std::setw(5) << std::setprecision(1) << bw_gbs << " GB/s\n";
+        }
+
         // Benchmark Exact Peer Baseline (Direct peer kernel)
         if (can01 && can10) {
+            for (int r = 0; r < 2; ++r) {
+                CUDA_CK(cudaSetDevice(r));
+                CUDA_CK(cudaMemset(res[r].d_flags[0], 0, kPeerBlocks * sizeof(unsigned)));
+                CUDA_CK(cudaMemset(res[r].d_flags[1], 0, kPeerBlocks * sizeof(unsigned)));
+            }
             CUDA_CK(cudaSetDevice(0));
             CUDA_CK(cudaEventRecord(ev_start, res[0].stream));
             for (int t = 0; t < chained_trials; ++t) {
