@@ -31,22 +31,21 @@ engine refuses or fails to start (serve/server.py, "split_fallback").
 from __future__ import annotations
 
 import dataclasses
+import os
 import pathlib
 import re
 
 # What has been run with the host exchange, per make: {make: {architecture: card counts}}.  NVIDIA: 2x RTX A6000 (boston, sm_86), 2x RTX PRO 6000 (srv118, sm_120).
 # AMD: 4x Radeon AI PRO R9700 (r9700, gfx1201; phaseA-tests/sfnx/RESULTS-HIP.md): 4 cards with UD-Q4_K_XL, 3 cards with the IQ3_S set, 2 cards with the IQ3_S set at 8K context and 2 slots only
 # (the memory rule below refuses that by its estimate; the counts here say the engine has run on them).
-TESTED = {"nvidia": {"sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (2, 3, 4)}}
+TESTED = {"nvidia": {"sm_75": (2,), "sm_86": (2,), "sm_120": (2,)}, "amd": {"gfx1201": (2, 3, 4)}}
 # the engine package's kernels (one binary per card count with a code object for each AMD architecture): any other card is refused. AMD beyond gfx1201 is EXPERIMENTAL: only an explicit
 # `--split-engine on` starts it there (never auto), and the engine runs its kernel self-test on the card before it loads the model (src/split/src/hip/selftest_policy.hpp)
-BUILT_ARCHS = {"nvidia": ("sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
+BUILT_ARCHS = {"nvidia": ("sm_75", "sm_86", "sm_120"), "amd": ("gfx1100", "gfx1101", "gfx1102", "gfx1103", "gfx1200", "gfx1201")}
 TESTED_CARD_COUNTS = (2,)          # run with the host exchange: 2 cards (boston, 2x RTX A6000; srv118, 2x RTX PRO 6000)
-TESTED_ARCHS = (86, 120)           # compute capability: sm_86 (the 61-task suite, pictures, hashes) and sm_120 (decode, prompts, parallel, hashes,
-                                   # pictures; no suite there)
+TESTED_ARCHS = (75, 86, 120)       # compute capability: sm_75, sm_86, sm_120
 MODES = ("auto", "on", "off")
 #: cards (compute capability) on which Auto drafting resolves to split + MTP rather than layer split + DFlash2: the split decodes faster there
-#: (phaseA-tests/sfnx/RESULTS.md section 17). Another card is not auto-split at all (TESTED_ARCHS), so it keeps Auto = layer split + DFlash2.
 AUTO_SPLIT_BEATS_DFLASH2 = (86, 120)
 #: AMD architectures on which mode "auto" starts the split engine (owner, 2026-11-02: default on for two or more cards, `--split-engine off` turns it off). The one flip: take an
 #: architecture out of this tuple and auto keeps the layer split there while `--split-engine on` still runs the split.
@@ -252,7 +251,15 @@ def decide(*, enabled: bool, system: str, cards: list[Card], ram_total_gib: floa
         why.append("it only knows Qwen3.8-Flash-Next (48 layers, 512 experts)")
     need_vram = model.routed_bytes / GIB / max(n, 1) + CARD_OVERHEAD_GIB
     need_ram = model.embd_ram_bytes / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024
-    if cards and n >= 2 and min(c.room_mib for c in cards) / 1024 < need_vram:
+    expert_ram_gib_env = os.environ.get("FNX_EXPERT_RAM_GIB") or os.environ.get("STRATA_SPLIT_EXPERT_RAM_GIB")
+    if expert_ram_gib_env and expert_ram_gib_env != "off" and cards and n >= 2:
+        ram_gib = float(expert_ram_gib_env)
+        need_vram = max(0.0, model.routed_bytes - ram_gib * GIB) / GIB / max(n, 1) + CARD_OVERHEAD_GIB
+        need_ram = (model.embd_ram_bytes + ram_gib * GIB) / GIB + RAM_PINNED_BUFFERS_GIB + cache_mib / 1024
+        note = f"expert paging {ram_gib:.0f} GiB in RAM"
+        if note not in untested:
+            untested.append(note)
+    elif cards and n >= 2 and min(c.room_mib for c in cards) / 1024 < need_vram:
         has = f"{min(c.room_mib for c in cards) / 1024:.0f} GiB" + (" free" if any(c.free_mib is not None for c in cards) else "")   # free memory when it was read, else the size
         why.append(f"all the experts do not fit in the cards' memory (each card needs about {need_vram:.0f} GiB, has {has})")
     if ram_available_gib < need_ram + RAM_SPARE_GIB:
@@ -279,7 +286,13 @@ def split_config(base: dict, decision: Decision, *, exe: str, native: str, mtp_d
     if vision:
         cfg["args"].append("--vision")
     # every expert in the cards' memory, no expert cache, no arena: the engine reads these two at start
-    cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
+    expert_ram = os.environ.get("FNX_EXPERT_RAM_GIB")
+    if expert_ram is None and any("expert paging" in u for u in decision.untested):
+        expert_ram = "36"
+    if expert_ram and expert_ram != "off":
+        cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "1", "FNX_EXPERT_RAM_GIB": str(expert_ram)}
+    else:
+        cfg["env"] = {**(base.get("env") or {}), "FNX_ARENA": "0", "FNX_EXPERT_RAM_GIB": "off"}
     cfg["split_fallback"] = {k: base[k] for k in ("exe", "args", "env", "layer_split", "replicas", "user_args", "drafting", "cwd") if k in base}
     # The split engine runs the model's own draft layer (the MTP) and nothing else. Saying so in the config ("drafting": "mtp") keeps serve/server.py's
     # drafter step, which resolves Auto to DFlash2 where the engine has it, from adding DFlash2 flags to the split engine's arguments (it would refuse them

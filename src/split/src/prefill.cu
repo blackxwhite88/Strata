@@ -350,7 +350,6 @@ struct Engine::Pf {
     std::vector<std::function<void()>> post;
     int dev = 0;
     unsigned seq = 0;
-#if FNX_HIP
     // FNX_PF_PEER small-chunk sum (pf_common.cuh k_pfa_*): this card's mailbox [2 sets][NCARD senders][a2a_rows * N] f32 and flags [NCARD], the peers' pointers, the push kernel's counter
     int a2a_rows = 0;
     float4* a2a_box = nullptr;
@@ -358,7 +357,6 @@ struct Engine::Pf {
     unsigned* a2a_cnt = nullptr;
     float4** a2a_peer_box_d = nullptr;     // device arrays of the peers' pointers (kernel arguments)
     unsigned** a2a_peer_flag_d = nullptr;
-#endif
     // attention partials (attn_prompt's blocks per owner card) and those received from the other cards; each card's
     // receive slots and flags (slot k: from card + k + 1). FNX_PF_ATTN_DEC=1: the decode attention
     bool attn_dec = false;
@@ -978,25 +976,18 @@ void Engine::prefill_alloc() {
             const size_t share = (size_t) (pf_c_ + NCARD - 1) / NCARD * N;   // a card's share of the rows
             r.send = palloc<__half>(share);
             for (int k = 0; k < 2; ++k) {
-#if FNX_HIP
                 if (pf_peer_) {   // device memory on this card: the previous card's kernels store into it
                     for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = ppalloc<__half>(share);
                     r.ag[k] = ppalloc<__half>((size_t) pf_c_ * N);
-                } else
-#endif
-                {
+                } else {
                     for (int h = 0; h < NCARD - 1; ++h) r.in[h][k] = hpalloc<__half>(share);   // a slot per reduce hop
                     r.ag[k] = hpalloc<__half>((size_t) pf_c_ * N);
                 }
                 for (int h = 0; h < NCARD - 1; ++h) r.din[h][k] = palloc<__half>(share);
                 r.dag[k] = palloc<__half>((size_t) pf_c_ * N);
             }
-#if FNX_HIP
             if (pf_peer_) r.flags = ppalloc<unsigned>(2 * PF_RING_STEPS);
-            else
-#endif
-            r.flags = hpalloc<unsigned>(2 * PF_RING_STEPS);
-#if FNX_HIP
+            else r.flags = hpalloc<unsigned>(2 * PF_RING_STEPS);
             if (pf_peer_) {   // the small-chunk sum: FNX_PF_A2A_ROWS rows at most (0: always the ring)
                 const long long ar = env_int("FNX_PF_A2A_ROWS", 256);
                 p->a2a_rows = (int) std::min<long long>(std::max<long long>(ar, 0), pf_c_);
@@ -1008,7 +999,6 @@ void Engine::prefill_alloc() {
                     p->a2a_peer_flag_d = palloc<unsigned*>(NCARD);
                 }
             }
-#endif
         }
         p->dev = b.dev;
 #if FNX_HIP
@@ -1179,7 +1169,6 @@ void Engine::prefill_alloc() {
         }
         r.nflags = n.ring_ce.flags;
         r.next_dev = n.dev;
-#if FNX_HIP
         if (p.a2a_rows > 0) {
             ckc(cudaSetDevice(p.dev), "set");
             float4* boxes[NCARD];
@@ -1188,7 +1177,6 @@ void Engine::prefill_alloc() {
             ckc(cudaMemcpy(p.a2a_peer_box_d, boxes, sizeof boxes, cudaMemcpyHostToDevice), "a2a boxes");
             ckc(cudaMemcpy(p.a2a_peer_flag_d, flags, sizeof flags, cudaMemcpyHostToDevice), "a2a flags");
         }
-#endif
         if (p.hcs) {
             for (int k = 0; k < 2; ++k) p.nhg_in[k] = n.hg_in[k], p.nhg_flags[k] = n.hg_flags[k];
             for (int k = 0; k < 2; ++k) p.nrg_in[k] = n.rg_in[k];

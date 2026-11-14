@@ -723,6 +723,7 @@ class NoPeerAccess(unittest.TestCase):
                            r"cudaMemcpy3DPeer(?:Async)?|cuMemcpyPeer(?:Async)?|cuMemcpy3DPeer(?:Async)?)")
     FORBIDDEN_HIP = re.compile(r"(hipDeviceEnablePeerAccess|hipDeviceDisablePeerAccess|hipMemcpyPeer(?:Async)?|hipMemcpy3DPeer(?:Async)?|hipCtxEnablePeerAccess)")
     HIP_PEER_FILE = "src/split/src/hip/peer.h"
+    CUDA_PEER_FILE = "src/split/src/cuda/peer.h"
 
     def _code_lines(self):
         for p in sorted((ROOT / "src" / "split").rglob("*")):
@@ -732,8 +733,15 @@ class NoPeerAccess(unittest.TestCase):
                 yield p, n, line, line.split("//", 1)[0]
 
     def test_no_cuda_peer_call_in_the_engine_sources(self):
-        bad = [f"{p.relative_to(ROOT)}:{n}: {line.strip()[:100]}" for p, n, line, code in self._code_lines() if self.FORBIDDEN.search(code)]
-        self.assertEqual(bad, [], "CUDA peer access in the split engine:\n" + "\n".join(bad))
+        bad = [f"{p.relative_to(ROOT)}:{n}: {line.strip()[:100]}" for p, n, line, code in self._code_lines()
+               if self.FORBIDDEN.search(code) and p.relative_to(ROOT).as_posix() != self.CUDA_PEER_FILE]
+        self.assertEqual(bad, [], "CUDA peer access outside " + self.CUDA_PEER_FILE + ":\n" + "\n".join(bad))
+
+    def test_the_cuda_peer_file_enables_access_but_never_uses_the_copy_engine(self):
+        text = (ROOT / self.CUDA_PEER_FILE).read_text(encoding="utf-8")
+        code = "\n".join(l.split("//", 1)[0] for l in text.splitlines())
+        self.assertIn("cudaDeviceEnablePeerAccess", code)
+        self.assertNotRegex(code, r"cudaMemcpy(?:3D)?Peer")   # kernel stores only, no peer copy engines
 
     def test_hip_peer_calls_only_in_the_one_probed_file(self):
         bad = [f"{p.relative_to(ROOT).as_posix()}:{n}: {line.strip()[:100]}" for p, n, line, code in self._code_lines()

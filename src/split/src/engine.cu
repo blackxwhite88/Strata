@@ -23,6 +23,8 @@
 #if FNX_HIP
 #include "hip/peer.h"
 #include "hip/rccl.h"
+#else
+#include "cuda/peer.h"
 #endif
 
 namespace fnx {
@@ -115,12 +117,11 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
     }
     pf_jobs_ = pf_c_ * TOPK / PF_JOB + NEXP;   // jobs of up to PF_JOB pairs per expert, at most
     set_prompt_rows(pf_c_);
-    // FNX_PEER (AMD only; hip/peer_policy.hpp has the rules: 0 host exchange, 1 try the peer push, unset the build's default): every directed pair is probed at start
+    // FNX_PEER (hip/peer_policy.hpp has the rules: 0 host exchange, 1 try the peer push, unset the build's default): every directed pair is probed at start
     // (kernel stores into the peer, a full read-back compare on both sides, a flag round trip); any failure leaves the host exchange for the whole run with one line.
     // FNX_PEER_PARTS: 1 the window sums, 2 the attention merge, 3 both (the default)
     bool peer_on = false;
     int peer_parts = 0;
-#if FNX_HIP
     {
         std::vector<int> devs;
         for (int c = 0; c < NCARD; ++c) devs.push_back(m.cards[c].dev);
@@ -129,6 +130,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         peer_on = pd.use;
         peer_parts = (int) env_int("FNX_PEER_PARTS", 3);
         if (peer_on) std::fprintf(stderr, "fnx: peer push: %s%s pushed into the peers' memory\n", peer_parts & 1 ? "the window sums " : "", peer_parts & 2 ? "and the attention merge" : "");
+#if FNX_HIP
         {   // RCCL for the prompt sums: constant RCCL_DEFAULT_ON (off until the screens say otherwise), FNX_PF_RCCL=0/1 overrides
             const RcclDecision rd = rccl_decide(std::getenv("FNX_PF_RCCL"), peer_on, RCCL_DEFAULT_ON, [&](std::string& why) {
                 std::shared_ptr<RcclState> st;
@@ -139,18 +141,22 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             if (!rd.line.empty()) std::fprintf(stderr, "fnx: %s\n", rd.line.c_str());
             rccl_on_ = rd.use;
         }
+#endif
         // the prompt chunk sums through the peers' device memory (needs the peer push; RCCL, when it is in use, does the sums instead): FNX_PF_PEER=0 keeps the host exchange
         pf_peer_ = peer_on && !rccl_on_ && env_int("FNX_PF_PEER", 1) != 0;
         if (pf_peer_) std::fprintf(stderr, "fnx: peer push: the prompt chunk sums are pushed into the peers' device memory\n");
     }
     auto pxalloc = [&](size_t bytes) -> void* {
         void* p = nullptr;
+#if FNX_HIP
         if (hipExtMallocWithFlags(&p, bytes, hipDeviceMallocFinegrained) != hipSuccess) throw std::runtime_error("FNX_PEER: fine-grained device allocation of " + std::to_string(bytes >> 10) + " KiB failed");
+#else
+        if (cudaMalloc(&p, bytes) != cudaSuccess) throw std::runtime_error("FNX_PEER: device allocation of " + std::to_string(bytes >> 10) + " KiB failed");
+#endif
         ck(FNX_ZERO_DEV(p, bytes), "peer mailbox clear");
         own_dev(p);
         return p;
     };
-#endif
     for (int c = 0; c < NCARD; ++c) {
         const CardW& w = m.cards[c];
         CardBuf* b = new CardBuf();
@@ -281,20 +287,16 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         b->ring.f32 = ring_f32();
         b->ring.err = dalloc<unsigned>(1);
         b->att_ring.card = c;
-#if FNX_HIP
         if (peer_on && (peer_parts & 1)) b->ring.pk = pxalloc((size_t) 2 * NCARD * MAXT * (N / 2) * sizeof(unsigned long long));
         b->att_ring.in = peer_on && (peer_parts & 2) ? (unsigned long long*) pxalloc(att_ring_words() * sizeof(unsigned long long))
                                                      : hxalloc<unsigned long long>(att_ring_words());
-#else
-        b->att_ring.in = hxalloc<unsigned long long>(att_ring_words());
-#endif
         b->att_ring.err = b->ring.err;
         cb_.push_back(b);
     }
-    // every link carries a probe's stores before the ring's (src/peer_probe.hpp): one that drops them stops the engine
-    // here, named, instead of in the first window's ring; a slow one is said and the engine goes on
-    std::fprintf(stderr, "fnx: HOSTRING build: the cards exchange through page-locked host memory; peer access is never enabled, "
-                         "no peer probe, IOMMU and BAR1 checks skipped\n");
+    if (!peer_on) {
+        std::fprintf(stderr, "fnx: HOSTRING build: the cards exchange through page-locked host memory; peer access is never enabled, "
+                             "no peer probe, IOMMU and BAR1 checks skipped\n");
+    }
     for (int c = 0; c < NCARD; ++c) {
         cb_[c]->ring.next_in = cb_[(c + 1) % NCARD]->ring.in;
         cb_[c]->ring.next_ag = cb_[(c + 1) % NCARD]->ring.ag;

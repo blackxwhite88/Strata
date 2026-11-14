@@ -212,17 +212,14 @@ void lock_in_ram(const Tensor& t) {
             const uintptr_t lo = std::min(e, a + (uintptr_t) i * part), hi = std::min(e, lo + part);
             if (hi > lo && mlock((const void*) lo, hi - lo) != 0) {
                 err[(size_t) i] = errno;
-#if FNX_HIP
-                // HIP build: a user's RLIMIT_MEMLOCK is often 8 MiB and cannot be raised without root. The table then stays in the page
+                // a user's RLIMIT_MEMLOCK is often 8 MiB and cannot be raised without root. The table then stays in the page
                 // cache unlocked (it is a file mapping: an evicted page is read again); the 16 threads still fault it in side by side
                 volatile unsigned char sink = 0;
                 for (uintptr_t p = lo; p < hi; p += PG) sink = sink + *(const volatile unsigned char*) p;
                 (void) sink;
-#endif
             }
         });
     for (auto& x : th) x.join();
-#if FNX_HIP
     for (int en : err)
         if (en) {
             std::fprintf(stderr, "fnx: mlock of %s (%zu MiB) failed: %s; the table stays unlocked in the page cache (raise RLIMIT_MEMLOCK to lock it)\n",
@@ -230,11 +227,6 @@ void lock_in_ram(const Tensor& t) {
             break;
         }
     return;
-#endif
-    for (int en : err)
-        if (en)
-            throw std::runtime_error("fnx: mlock of " + t.name + " (" + std::to_string(t.nbytes >> 20) + " MiB) failed: " + std::strerror(en) +
-                                     "; run with RLIMIT_MEMLOCK raised (systemd-run -p LimitMEMLOCK=infinity)");
 }
 
 // the stager's groups for load_card: group l every tensor of layer l, group NL the output head's. The head is read
@@ -425,6 +417,9 @@ struct Up {
         if (t.type == T_F32) {
             const float* f = (const float*) t.data;
             for (size_t i = 0; i < n; ++i) h[i] = f32_to_bf16(f[i]);
+        } else if (t.type == T_F16) {
+            const uint16_t* fp16 = (const uint16_t*) t.data;
+            for (size_t i = 0; i < n; ++i) h[i] = f32_to_bf16(f16_to_f32(fp16[i]));
         } else if (t.type == T_Q8_0) {
             for (size_t b = 0; b < n / 32; ++b) {
                 const uint8_t* blk = t.data + b * 34;
@@ -1458,6 +1453,9 @@ Model::Model(const std::string& path, Load how, Store* store, const std::string*
         });
     for (auto& t : th) t.join();
     for (int c = 0; c < NCARD; ++c)
+        if (!errs[c].empty())
+            std::fprintf(stderr, "fnx: card %d error: %s\n", c, errs[c].c_str());
+    for (int c = 0; c < NCARD; ++c)
         if (!errs[c].empty()) throw std::runtime_error("card " + std::to_string(c) + ": " + errs[c]);
     // the disk rate only when the disk gave nearly all of it (tools/lab.sh estimates its next cold loads from it)
     const double disk = st.disk_bytes() / 1e9, cache = st.cache_bytes() / 1e9;
@@ -1535,6 +1533,9 @@ void each_card(std::vector<CardW>& cards, F f) {
             } catch (const std::exception& e) { errs[c] = e.what(); }
         });
     for (auto& t : th) t.join();
+    for (int c = 0; c < NCARD; ++c)
+        if (!errs[c].empty())
+            std::fprintf(stderr, "fnx: card %d error: %s\n", c, errs[c].c_str());
     for (int c = 0; c < NCARD; ++c)
         if (!errs[c].empty()) throw std::runtime_error("card " + std::to_string(c) + ": " + errs[c]);
 }
