@@ -51,6 +51,8 @@ def _inside(path: str, root: str) -> bool:
 
 
 def _is_system(full: str) -> bool:
+    if _inside(full, "/dev/shm"):
+        return False
     for root in _system_roots():
         if not _inside(full, root) or _inside(full, os.path.expanduser("~")):     # the running user's own home is theirs (root's /root included)
             continue

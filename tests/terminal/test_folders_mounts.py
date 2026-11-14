@@ -25,13 +25,13 @@ class MountPoints(unittest.TestCase):
     def test_the_drives_a_desktop_mounts_are_not_system_folders(self):
         with posix_rules(), mock.patch.dict(os.environ, {"HOME": "/home/ann", "USERPROFILE": "/home/ann"}):
             for p in ("/run/media/ann/Backup/Strata", "/run/media/ann/My Drive/Strata-models", "/run/media/ann/Backup",
-                      "/media/ann/Backup/Strata", "/media/ann/Backup", "/mnt/models/Strata", "/mnt/data"):
+                      "/media/ann/Backup/Strata", "/media/ann/Backup", "/mnt/models/Strata", "/mnt/data", "/dev/shm/x"):
                 with self.subTest(p=p):
                     self.assertFalse(folders._is_system(p), p)
 
     def test_real_system_folders_are_still_refused(self):
         with posix_rules(), mock.patch.dict(os.environ, {"HOME": "/home/ann", "USERPROFILE": "/home/ann"}):
-            for p in ("/usr/share/strata", "/etc/strata", "/bin", "/boot/x", "/dev/shm/x", "/proc/1", "/sys/x", "/root/x", "/var/lib/strata",
+            for p in ("/usr/share/strata", "/etc/strata", "/bin", "/boot/x", "/proc/1", "/sys/x", "/root/x", "/var/lib/strata",
                       "/lib/x", "/sbin", "/run", "/run/user/1000/strata", "/run/systemd/x", "/run/lock", "/run/media", "/run/mediax/Strata"):
                 with self.subTest(p=p):
                     self.assertTrue(folders._is_system(p), p)
