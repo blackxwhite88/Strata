@@ -72,6 +72,7 @@ public:
     // at most `rows` prompt rows to a pass (0: the engine's own, FNX_PF_PASS chunks). The server asks for 8192 while other requests decode: they run a window between
     // two passes, so a pass is how long they wait
     void set_pass_rows(int rows) { pass_rows_ = rows; }   // 0: no limit
+    void set_prefill_slice_rows(int rows) { prefill_slice_rows_ = rows; }  // 0: allocated chunk size; opt-in server fairness
     // images. Token ids at or above IMAGE_TOK are image cells: the caller gives each picture's cells ids made from its
     // hash, so a prefix match tells pictures apart. The PLE n-grams read them as the model's image token
     static constexpr int IMAGE_TOK = 1 << 30;
@@ -397,6 +398,7 @@ private:
     // `between` runs on the host while the cards work
     static constexpr int PF_PASS = 8, PF_SETS = 2 * PF_PASS;
     int pass_rows_ = 0;
+    int prefill_slice_rows_ = 0;
     int pf_pass_pick_ = 0;   // chunks a pass the constructor picked from the free VRAM (0: the rule in prefill_alloc)
     struct PfChunk {
         std::vector<int> tokens;

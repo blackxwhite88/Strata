@@ -44,6 +44,7 @@
 #include "../src/batch.hpp"
 #include "../src/engine.hpp"
 #include "../src/env.hpp"
+#include "../src/read_interleave.hpp"
 #include "../src/session.hpp"
 #include "sfnx_input.hpp"
 
@@ -452,6 +453,10 @@ struct Server {
         if (a.batch > 1 && fnx::batch_drafts() != fnx::BatchDrafts::off)
             dec = std::make_unique<fnx::BatchDecoder>(e, a.K, a.lookup, EOS, fnx::batch_drafts());
         e.warm_graphs();
+        if (read_interleave.enabled)
+            std::fprintf(stderr, "sfnx: FNX_READ_INTERLEAVE: prompt slices <= %d rows, target %d tokens per decoding lane, "
+                                 "at most %d decode windows per slice\n", read_interleave.chunk_rows,
+                         read_interleave.tokens, read_interleave.windows);
     }
 
     // the slot's lane and session, made on first use (lane 0 is slot 0's from the start, but lanes move between
@@ -739,7 +744,33 @@ struct Server {
             if (slot >= 0 ? in.yielded(slot, seq) || in.bstopped(slot, seq) : solo_yield_to(seq) >= 0) throw Interrupted{done};
             if (!any_decoding()) return;
             try {
-                decode_step();
+                if (!read_interleave.enabled) decode_step();
+                else {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    auto counts = [&] {
+                        std::vector<int> v;
+                        for (const Slot& s : slots) v.push_back(s.produced);
+                        return v;
+                    };
+                    auto active = [&] {
+                        std::vector<bool> v;
+                        for (const Slot& s : slots) v.push_back(s.decoding || s.paused);
+                        return v;
+                    };
+                    const std::vector<int> before = counts();
+                    fnx::ReadDecodeBudget budget(read_interleave, before, active());
+                    while (budget.next(counts(), active())) {
+                        if (in.stop_now || (slot >= 0 ? in.yielded(slot, seq) || in.bstopped(slot, seq) : solo_yield_to(seq) >= 0))
+                            throw Interrupted{done};
+                        decode_step();
+                    }
+                    int emitted = 0;
+                    const std::vector<int> after = counts();
+                    for (size_t i = 0; i < before.size(); ++i) emitted += after[i] - before[i];
+                    std::fprintf(stderr, "sfnx: read interleave: prompt %d/%d, decode windows %d, tokens emitted %d, targets met %s, %.2f ms\n",
+                                 done, total, budget.windows(), emitted, budget.met(after, active()) ? "yes" : "no",
+                                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                }
             } catch (const fnx::Refused& ex) {
                 throw std::runtime_error(std::string("a decoding window during a prompt read: ") + ex.what());
             }
@@ -822,6 +853,8 @@ struct Server {
         try {
             reading = slot;
             e.set_pass_rows(any_decoding() ? 8192 : 0);   // other requests decode: they run between passes, so a pass stays at most 8192 rows (what 2 chunks of 4096 were)
+            e.set_prefill_slice_rows(read_interleave.enabled && any_decoding() ? read_interleave.chunk_rows : 0);
+            if (read_interleave.enabled && any_decoding()) e.set_pass_rows(read_interleave.chunk_rows);
             s.read(r.ids, st, progress(-1, r.seq), r.hints);
             reading = -1;
         } catch (const Interrupted& it) {
@@ -909,6 +942,8 @@ struct Server {
         try {
             reading = i;
             e.set_pass_rows(any_decoding() ? 8192 : 0);
+            e.set_prefill_slice_rows(read_interleave.enabled && any_decoding() ? read_interleave.chunk_rows : 0);
+            if (read_interleave.enabled && any_decoding()) e.set_pass_rows(read_interleave.chunk_rows);
             s.read(r.ids, st, progress(i, r.seq), r.hints);
             reading = -1;
         } catch (const Interrupted& it) {
@@ -1013,6 +1048,7 @@ struct Server {
         }
     }
     const bool interleave_ = fnx::env_int("FNX_ADMIT_INTERLEAVE", 0) != 0;   // off: measured no gain on 4 x R9700 (RESULTS-HIP.md section 8)
+    const fnx::ReadInterleave read_interleave = fnx::ReadInterleave::from_env();
 };
 
 // FNX_ROUTE_COUNT and FNX_ROUTE_TRACE (measurements) each need their file's path: checked before the model loads, not

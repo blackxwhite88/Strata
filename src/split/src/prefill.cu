@@ -12,6 +12,7 @@
 #include "engine.hpp"
 #include "engine_impl.hpp"
 #include "env.hpp"
+#include "read_interleave.hpp"
 #include "pf_ring_plan.hpp"
 #if FNX_HIP
 #include "hip/rccl.h"
@@ -1264,7 +1265,8 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     const bool staging = pf_[0]->stage[0] && (int) tokens.size() >= pf_[0]->stage_rows;
     int K = PF_PASS;
     for (const Pf* p : pf_) K = std::min(K, p->pass);
-    if (pass_rows_ > 0) K = std::max(1, std::min(K, pass_rows_ / pf_c_));
+    const int chunk_rows = prefill_slice_rows(pf_c_, prefill_slice_rows_);
+    if (pass_rows_ > 0) K = std::max(1, std::min(K, pass_rows_ / chunk_rows));
     for (int k = 0; k < 2 * K; ++k)
         if (!pf_emb_[k]) {
             ckc(cudaMallocHost(&pf_emb_[k], (size_t) pf_c_ * N * sizeof(float)), "pinned emb");
@@ -1297,8 +1299,8 @@ void Engine::prefill(const std::vector<int>& tokens, int after) {
     const int lone_min = (int) env_int("FNX_PF_HCSPLIT_MIN", 3);   // fewer whole chunks than this: the tail stays with them (one pass, the chunks hide each other's sums)
     auto chunks_of = [&](size_t i0, int half) {
         std::vector<PfChunk> ch;
-        for (size_t i = i0; i < nt && (int) ch.size() < K; i += pf_c_) {
-            const size_t e = std::min(nt, i + pf_c_);
+        for (size_t i = i0; i < nt && (int) ch.size() < K; i += chunk_rows) {
+            const size_t e = std::min(nt, i + chunk_rows);
             if (lone_tail && (int) ch.size() >= lone_min && e - i != (size_t) pf_c_) break;
             ch.push_back({std::vector<int>(tokens.begin() + i, tokens.begin() + e), e < nt ? tokens[e] : after, half * K + (int) ch.size()});
         }
