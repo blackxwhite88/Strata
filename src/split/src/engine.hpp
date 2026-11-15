@@ -254,6 +254,8 @@ private:
     static constexpr unsigned TAG_END = 1u << 24;
     void tags_room(unsigned n);
     void clear_rings();
+    // Failure-only, best effort: a CUDA fault may prevent reading the device diagnostics.
+    void error_context(const char* path, int first, int last) const noexcept;
     void pf_clear_ring(int c);   // card c's prompt ring (prefill.cu), when it has buffers of its own
     // the prompt path's copy-engine ring and attention exchange wait for flags >= their sum's number (Pf::seq, the same
     // on every card), which would read every old flag as done once the u32 wrapped: every card idle, the flags zeroed,

@@ -1351,6 +1351,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
     std::vector<int> pos0((size_t) nk);
     for (int j = 0; j < nk; ++j) pos0[(size_t) j] = pos_ + rows, rows += (int) chunks[(size_t) j].tokens.size();
     if (pos_ + rows > max_ctx_) throw Refused("prefill: context full");
+    try {
     ensure_pages(pos_ + rows);
     const float eps = m_.eps;
     // each chunk's (position, tag) and each group's: a tag per group, so the recurrent history's parity steps per group
@@ -1795,6 +1796,10 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
             for (int c = 0; c < NCARD; ++c)
                 std::fprintf(stderr, "; card %d experts %zu MiB copied in, %zu MiB read in place", c, pf_[c]->staged >> 20, pf_[c]->in_place >> 20);
         std::fprintf(stderr, "\n");
+    }
+    } catch (...) {
+        error_context("prefill", pos0.front(), pos0.front() + rows);
+        throw;
     }
 }
 

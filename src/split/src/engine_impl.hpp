@@ -181,7 +181,8 @@ constexpr bool MTP_HEAD_EVERY_ROW = true;
 inline unsigned* err_word(CardBuf& b) { return b.ring.err; }
 inline const char* window_error(unsigned err, bool draft) {
     if (err & 1u) return "a ring sum timed out";
-    if (err & 2u) return "a ring sum met a NaN or inf (or, on the fp16 ring, a value past its range)";
+    if (err & 8u) return "a ring sum met a NaN or inf";
+    if (err & 2u) return "a ring sum met a finite value past fp16 range (65504)";
     if (err & 4u) return "an hc read's grid barrier timed out";
     if (err & 32u) return "the router met a row without ten finite logits";
     if (err & 16u) return draft ? "the draft layer's logits hold a NaN or inf" : "the head's logits hold a NaN or inf";

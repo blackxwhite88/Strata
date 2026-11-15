@@ -107,7 +107,7 @@ constexpr int PF_RING_STEPS = pf_ring_steps(NCARD);   // flags a set holds
 static __global__ void k_pfr_pack(const float2* __restrict__ x, int n2, __half2* __restrict__ out, unsigned* err) {
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) {
         const float2 v = x[e];
-        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);   // past fp16's range (or NaN)
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, isfinite(v.x) && isfinite(v.y) ? 2u : 10u);   // past fp16's range (or NaN)
         out[e] = __floats2half2_rn(v.x, v.y);
     }
 }
@@ -117,7 +117,7 @@ static __global__ void k_pfr_add(const __half2* __restrict__ in, const float2* _
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) {
         const float2 a = __half22float2(in[e]), b = x[e];
         const float2 v = make_float2(a.x + b.x, a.y + b.y);
-        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, isfinite(v.x) && isfinite(v.y) ? 2u : 10u);
         out[e] = __floats2half2_rn(v.x, v.y);
     }
 }
@@ -139,7 +139,7 @@ static __global__ void k_pfr_add_gather(const __half2* __restrict__ in, const fl
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) {
         const float2 a = __half22float2(in[e]), b = x[e];
         const float2 v = make_float2(a.x + b.x, a.y + b.y);
-        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, isfinite(v.x) && isfinite(v.y) ? 2u : 10u);
         const __half2 h = __floats2half2_rn(v.x, v.y);
 #pragma unroll
         for (int d = 0; d < NCARD; ++d) dst.p[d][e] = h;
@@ -213,7 +213,7 @@ static __global__ void k_pfa_sum(float* __restrict__ x, int C, const float4* __r
                 const int c = (k + s) % NCARD;
                 const float v = (j == 0 ? a[c].x : j == 1 ? a[c].y : j == 2 ? a[c].z : a[c].w);
                 const float t = s == 0 ? v : acc + v;
-                if (!(fabsf(t) <= RING_MAX)) atomicOr(err, 2u);
+                if (!(fabsf(t) <= RING_MAX)) atomicOr(err, isfinite(t) ? 2u : 10u);
                 acc = __half2float(__float2half(t));
             }
             r[j] = acc;
@@ -247,7 +247,7 @@ static __global__ void k_pfr_out(const __half2* __restrict__ ag, float2* __restr
 static __global__ void k_pfr_out_chk(const __half2* __restrict__ ag, float2* __restrict__ x, int n2, unsigned* err) {
     for (int e = blockIdx.x * blockDim.x + threadIdx.x; e < n2; e += gridDim.x * blockDim.x) {
         const float2 v = __half22float2(ag[e]);
-        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, isfinite(v.x) && isfinite(v.y) ? 2u : 10u);
         x[e] = v;
     }
 }

@@ -151,6 +151,58 @@ void Engine::on_cards(const std::function<void(int)>& f) {
     pool_->run(f);
 }
 
+void Engine::error_context(const char* path, int first, int last) const noexcept {
+    // Keep the entire context on one line, including when CUDA can no longer read a faulted card.
+    flockfile(stderr);
+    std::fprintf(stderr, "split error context: path=%s positions=[%d,%d) arena_base_=%d arena_w_=%d",
+                 path, first, last, arena_base_, arena_w_);
+    int saved_dev = -1;
+    cudaGetDevice(&saved_dev);
+    for (int c = 0; c < (int) cb_.size(); ++c) {
+        const CardBuf& b = *cb_[c];
+        const cudaError_t set = cudaSetDevice(b.dev);
+        // A timed-out prompt ring can still be waiting on another card. Never wait on that stream here.
+        const cudaError_t ready = set == cudaSuccess ? cudaStreamQuery(b.st) : set;
+        unsigned bits = 0;
+        const cudaError_t er = ready == cudaSuccess ? cudaMemcpy(&bits, b.ring.err, sizeof(bits), cudaMemcpyDeviceToHost) : ready;
+        std::fprintf(stderr, " card%d={dev=%d,err=", c, b.dev);
+        if (er == cudaSuccess) std::fprintf(stderr, "0x%x", bits);
+        else std::fprintf(stderr, "unavailable(%s)", cudaGetErrorString(er));
+        RouterBadRow bad{};
+        if (b.router_bad) {
+            const cudaError_t br = ready == cudaSuccess ? cudaMemcpy(&bad, b.router_bad, sizeof(bad), cudaMemcpyDeviceToHost) : ready;
+            if (br != cudaSuccess) std::fprintf(stderr, ",first_bad=unavailable(%s)", cudaGetErrorString(br));
+            else if (bad.path) std::fprintf(stderr, ",first_bad=(%s,layer=%d,row=%d)",
+                                           bad.path == 1u ? "decode" : "prompt", bad.layer, bad.row);
+            else std::fprintf(stderr, ",first_bad=none");
+        } else std::fprintf(stderr, ",first_bad=none");
+        const ExpertCache& ec = m_.cards[c].ec;
+        if (arena_cap_ && ec.lent && ec.arena_pool >= 0) {
+            int lent = -1;
+            const cudaError_t lr = ready == cudaSuccess ? cudaMemcpy(&lent, ec.lent + ec.arena_pool, sizeof(lent), cudaMemcpyDeviceToHost) : ready;
+            if (lr == cudaSuccess) std::fprintf(stderr, ",slots_lent=%d", lent);
+            else std::fprintf(stderr, ",slots_lent=unavailable(%s)", cudaGetErrorString(lr));
+            std::fprintf(stderr, ",slots_lent_host=%d", arena_slots_for(c, arena_w_));
+        } else std::fprintf(stderr, ",slots_lent=0");
+        std::fprintf(stderr, "}");
+    }
+    if (saved_dev >= 0) cudaSetDevice(saved_dev);
+    for (int i = 0; i < (int) lanes_.size(); ++i) {
+        const LaneHost& lane = lanes_[(size_t) i];
+        int highest = -1;
+        bool lent = false;
+        for (int page : lane.pages) {
+            highest = std::max(highest, page);
+            lent |= arena_cap_ && page >= arena_base_;
+        }
+        std::fprintf(stderr, " lane%d={pos=%d,pages=%zu,highest_page=%d,lent=%s,state_pages=[%d,%d)}",
+                     i, i == cur_ ? pos_ : lane.pos, lane.pages.size(), highest, lent ? "yes" : "no",
+                     lane.block0, lane.block0 < 0 ? lane.block0 : lane.block0 + lane.block_n);
+    }
+    std::fprintf(stderr, "\n");
+    funlockfile(stderr);
+}
+
 unsigned Engine::ring_tag() {
     tags_room(1);
     return ++tag_max_;
@@ -781,6 +833,7 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
     if (!pending_.empty() || !rows_pending_.lanes.empty()) throw std::runtime_error("verify: the last window is not committed");
     if (T < 1 || T > MAXT) throw std::runtime_error("window: 1..MAXT tokens");
     if (pos_ + T > max_ctx_) throw std::runtime_error("window: context full");
+    try {
     arena_churn();
     ensure_pages(pos_ + T);
     const auto t0 = std::chrono::steady_clock::now();
@@ -870,6 +923,10 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
     last_embed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     last_gpu_ms = gpu_ms;
     return out;
+    } catch (...) {
+        error_context("window", pos_, pos_ + T);
+        throw;
+    }
 }
 
 std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<int>& tokens) {
@@ -881,6 +938,7 @@ std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<i
         for (int q = 0; q < r; ++q)
             if (lanes[q] == lanes[r]) throw std::runtime_error("step: a lane twice in one window");
     }
+    try {
     arena_churn();
     const auto t0 = std::chrono::steady_clock::now();
     // the current lane's scalars to its slot, so every lane reads from lanes_
@@ -998,6 +1056,17 @@ std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<i
     last_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     last_gpu_ms = gpu_ms;
     return out;
+    } catch (...) {
+        int first = max_ctx_, last = 0;
+        for (size_t k = 0; k < lanes.size(); ++k) {
+            const int lane = lanes[k];
+            const int pos = lane == cur_ ? pos_ : lanes_[(size_t) lane].pos;
+            first = std::min(first, pos);
+            last = std::max(last, pos + 1);
+        }
+        error_context("step", first, last);
+        throw;
+    }
 }
 
 double rope_scale() {
@@ -1063,6 +1132,7 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
         for (int q = 0; q < i; ++q)
             if (lanes[q] == lanes[i]) throw std::runtime_error("verify_rows: a lane twice in one window");
     }
+    try {
     arena_churn();
     const auto t0 = std::chrono::steady_clock::now();
     // the current lane's scalars to its slot, so every lane reads from lanes_
@@ -1292,6 +1362,17 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
     ++win_stat_t[last_kind_][T].n;
     win_stat_t[last_kind_][T].ms += last_ms;
     return out;
+    } catch (...) {
+        int first = max_ctx_, last = 0;
+        for (size_t k = 0; k < lanes.size(); ++k) {
+            const int lane = lanes[k];
+            const int pos = lane == cur_ ? pos_ : lanes_[(size_t) lane].pos;
+            first = std::min(first, pos);
+            last = std::max(last, pos + counts[k]);
+        }
+        error_context("verify_rows", first, last);
+        throw;
+    }
 }
 
 std::vector<std::vector<int>> Engine::held_layouts(const std::vector<int>& lanes) const {

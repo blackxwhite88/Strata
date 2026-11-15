@@ -852,7 +852,7 @@ constexpr int RSTEPS = NCARD - 1;      // receive slots: the reduce hops
 constexpr int NP = N / 2;          // pairs per row
 // fp32 words: one value | tag per word, pair i at words 2i, 2i + 1
 __device__ __forceinline__ void rput32(unsigned long long* p, float2 v, unsigned tag, unsigned* err) {
-    if (!(isfinite(v.x) && isfinite(v.y))) atomicOr(err, 2u);
+    if (!(isfinite(v.x) && isfinite(v.y))) atomicOr(err, 10u);
     const unsigned long long t = (unsigned long long) tag << 32;
     *(volatile unsigned long long*) p = (unsigned long long) __float_as_uint(v.x) | t;
     *(volatile unsigned long long*) (p + 1) = (unsigned long long) __float_as_uint(v.y) | t;
@@ -868,7 +868,7 @@ __device__ __forceinline__ float rtake1(const unsigned long long* p, unsigned ta
     return __uint_as_float((unsigned) w);
 }
 __device__ __forceinline__ void rput(unsigned long long* p, float2 v, unsigned tag, unsigned* err) {
-    if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);   // out of range (or NaN)
+    if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, isfinite(v.x) && isfinite(v.y) ? 2u : 10u);   // out of range (or NaN)
     const __half2 h = __floats2half2_rn(v.x, v.y);
     *(volatile unsigned long long*) p = (unsigned long long) *reinterpret_cast<const unsigned*>(&h) | ((unsigned long long) tag << 32);
 }
@@ -976,7 +976,7 @@ __global__ void k_ring_a2a(Ring r, float* x, int T, const unsigned* tagp, int ca
         if (*(volatile const unsigned*) r.err & 1u) return;   // a peer never came: do not wait out every element's timeout
         const int t = e / NP, p = e % NP;
         const float2 v = ring_x2(x, m, T, t, p);
-        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(r.err, 2u);   // out of range (or NaN)
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(r.err, isfinite(v.x) && isfinite(v.y) ? 2u : 10u);   // out of range (or NaN)
         const __half2 h = __floats2half2_rn(v.x, v.y);
         *(volatile unsigned long long*) (mine + e) = (unsigned long long) *reinterpret_cast<const unsigned*>(&h) | ((unsigned long long) tag << 32);   // volatile: system-coherent, as the ring's words
         float2 sum = make_float2(0.f, 0.f);
@@ -1004,7 +1004,7 @@ __global__ void k_ring_a2a_push(Ring r, float* x, int T, const unsigned* tagp, i
         if (*(volatile const unsigned*) r.err & 1u) return;   // a peer never came: do not wait out every element's timeout
         const int t = e / NP, p = e % NP;
         const float2 v = ring_x2(x, m, T, t, p);
-        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(r.err, 2u);   // out of range (or NaN)
+        if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(r.err, isfinite(v.x) && isfinite(v.y) ? 2u : 10u);   // out of range (or NaN)
         const __half2 h = __floats2half2_rn(v.x, v.y);
         const unsigned long long word = (unsigned long long) *reinterpret_cast<const unsigned*>(&h) | ((unsigned long long) tag << 32);
 #pragma unroll
@@ -1501,7 +1501,7 @@ __device__ __forceinline__ void rb_seg(int T, int c, int& lo, int& len, int& s0,
     s1 = min(n, s0 + seg);
 }
 __device__ __forceinline__ __half2 rb_pack(float2 v, unsigned* err) {
-    if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, 2u);   // out of range (or NaN)
+    if (!(fabsf(v.x) <= RING_MAX && fabsf(v.y) <= RING_MAX)) atomicOr(err, isfinite(v.x) && isfinite(v.y) ? 2u : 10u);   // out of range (or NaN)
     return __floats2half2_rn(v.x, v.y);
 }
 // the block's writes, then its flag on the next card (one fence after the barrier covers the block's writes)

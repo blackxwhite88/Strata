@@ -347,9 +347,9 @@ struct Ring {
     void* pk = nullptr;
     void* peer_pk[NCARD] = {};
     bool peer = false;
-    unsigned* err;       // bit 1: a peer's value never came; bit 2: a NaN or inf (on the fp16 ring: a value past its
-                         // range); bit 4: an hc read's grid barrier timed out; bit 16: a NaN or inf among the head's
-                         // logits (the window's argmax); bit 32: a router row has fewer than ten finite logits
+    unsigned* err;       // bit 1: a peer's value never came; bit 2: a ring value past fp16 range;
+                         // bit 4: an hc read's grid barrier timed out; bit 8 (with 2): a ring NaN or inf;
+                         // bit 16: a NaN or inf among the head's logits; bit 32: fewer than ten finite router logits
     bool f32 = false;    // fp32 words (buffers sized for them) instead of fp16 pairs
     int rows = MAXT;     // the row capacity the buffers were sized for
     // a ring for chunk-sized sums (plain fp16 words and a flag per block and hop): this card's flags and the next's
