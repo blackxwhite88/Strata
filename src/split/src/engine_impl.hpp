@@ -72,6 +72,7 @@ struct CardBuf {
     float* snap_block = nullptr;
     size_t snap_block_bytes = 0;
     float* ple_hsnap;
+    RouterBadRow* router_bad = nullptr;
     Ring ring;
     AttRing att_ring;   // the attention partials' merge
     int* ctl;                         // [0] window position, [1] ring tag (as unsigned)
@@ -182,6 +183,7 @@ inline const char* window_error(unsigned err, bool draft) {
     if (err & 1u) return "a ring sum timed out";
     if (err & 2u) return "a ring sum met a NaN or inf (or, on the fp16 ring, a value past its range)";
     if (err & 4u) return "an hc read's grid barrier timed out";
+    if (err & 32u) return "the router met a row without ten finite logits";
     if (err & 16u) return draft ? "the draft layer's logits hold a NaN or inf" : "the head's logits hold a NaN or inf";
     if (err) return "an error bit no message names";
     return nullptr;

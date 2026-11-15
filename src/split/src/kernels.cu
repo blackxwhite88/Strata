@@ -26,6 +26,7 @@
 #undef __shfl_xor_sync
 #endif
 #include "common.cuh"
+#include "router_guard.cuh"
 #include "vecdotq.cuh"
 #if FNX_HIP
 #undef __shfl_sync
@@ -2131,7 +2132,7 @@ size_t gdn_prompt_work_floats(int C, int nv) { return (size_t) ((C + GCH - 1) / 
 namespace fnx {
 #if FNX_KPART == 8
 void router_route(const float* W, const float* x, float* logits, int T, int* topi, float* topw, Job* jobs_gu, Job* jobs_dn,
-                  int* njobs, void* st, const ExpertCache* ec, int layer, int* list, const Q8S* sh_gu, int sh_rows, const void* sh_y,
+                  int* njobs, unsigned* err, RouterBadRow* bad_row, void* st, const ExpertCache* ec, int layer, int* list, const Q8S* sh_gu, int sh_rows, const void* sh_y,
                   float* sh_out) {
     cudaStream_t s = (cudaStream_t) st;
     ShexpUp su;
@@ -2149,7 +2150,7 @@ void router_route(const float* W, const float* x, float* logits, int T, int* top
     unsigned* counter = (unsigned*) (njobs + 1);
     const ExpertCache none{};
     if (ec && (layer < 0 || layer >= NL || !list)) throw std::runtime_error("router_route: a cache plan needs its layer and list");
-#define FNX_RR(t) k_router_route<t><<<grid, RR_THREADS, 0, s>>>(W, x, logits, topi, topw, jobs_gu, jobs_dn, njobs, counter, ec ? *ec : none, layer, list, su)
+#define FNX_RR(t) k_router_route<t><<<grid, RR_THREADS, 0, s>>>(W, x, logits, topi, topw, jobs_gu, jobs_dn, njobs, counter, ec ? *ec : none, layer, list, su, err, bad_row)
     switch (T) {
         case 1: FNX_RR(1); break;
         case 2: FNX_RR(2); break;

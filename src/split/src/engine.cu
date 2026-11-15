@@ -286,6 +286,7 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         b->ring.ag = hxalloc<unsigned long long>(ring_ag_words(MAXT));
         b->ring.f32 = ring_f32();
         b->ring.err = dalloc<unsigned>(1);
+        b->router_bad = dalloc<RouterBadRow>(1);
         b->att_ring.card = c;
         if (peer_on && (peer_parts & 1)) b->ring.pk = pxalloc((size_t) 2 * NCARD * MAXT * (N / 2) * sizeof(unsigned long long));
         b->att_ring.in = peer_on && (peer_parts & 2) ? (unsigned long long*) pxalloc(att_ring_words() * sizeof(unsigned long long))
@@ -952,7 +953,7 @@ void Engine::ffn_half(int T, int call, CardBuf& b, const CardW& w, const LayerW&
     // the slots as they were, so with it the plan runs after, in moe_cache)
     const bool live = cache_live() && lyr >= 0 && lyr < NL;
     const bool plan_in_router = live && !b.probe_cnt;
-    router_route(L.router, b.mixed, b.logits, T, b.topi, b.topw, b.jobs_gu, b.jobs_dn, b.njobs, b.st, plan_in_router ? &w.ec : nullptr,
+    router_route(L.router, b.mixed, b.logits, T, b.topi, b.topw, b.jobs_gu, b.jobs_dn, b.njobs, b.ring.err, b.router_bad, b.st, plan_in_router ? &w.ec : nullptr,
                  lyr, b.cache_list, sh_in ? &L.sh_gu.s : nullptr, 2 * ffs, b.xq, b.sh_gu);
     if (const int l = lyr; l >= 0 && l < NL) {
         if (b.route_cnt) route_count(b.topi, P, b.route_cnt + (size_t) l * NEXP, b.st);

@@ -8,6 +8,7 @@
 // histories, the PLE history, the QSA keys, and with the draft layer attached its K/V and QSA keys too (the draft layer
 // over the chunk's final residuals in windows of MAXT rows).
 #include "pf_common.cuh"
+#include "router_topk.cuh"
 #include "engine.hpp"
 #include "engine_impl.hpp"
 #include "env.hpp"
@@ -193,39 +194,6 @@ __global__ void __launch_bounds__(HCM_THREADS) k_hcb_mixinj(const float* __restr
 }
 
 // ---------------------------------------------------------------- routing
-// row t (a warp): top 10 of the NEXP logits (the lower index on a tie), weights the selected softmax renormalized
-__global__ void k_pf_top10(const float* __restrict__ logits, int C, int* __restrict__ topi, float* __restrict__ topw) {
-    const int t = blockIdx.x * (blockDim.x >> 5) + (threadIdx.x >> 5), lane = threadIdx.x & 31;
-    if (t >= C) return;
-    float v[NEXP / 32];
-#pragma unroll
-    for (int i = 0; i < NEXP / 32; ++i) v[i] = logits[(size_t) t * (NEXP + 1) + lane + 32 * i];
-    unsigned taken = 0;
-    float top0 = 0.f, z = 0.f, wk = 0.f;
-#pragma unroll 1
-    for (int k = 0; k < TOPK; ++k) {
-        float bv = -INFINITY;
-        int bi = NEXP;
-#pragma unroll
-        for (int i = 0; i < NEXP / 32; ++i)
-            if (!(taken >> i & 1u) && v[i] > bv) { bv = v[i]; bi = lane + 32 * i; }
-#pragma unroll
-        for (int o = 16; o; o >>= 1) {
-            const float ov = __shfl_xor_sync(0xffffffffu, bv, o);
-            const int oi = __shfl_xor_sync(0xffffffffu, bi, o);
-            if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
-        }
-        if ((bi & 31) == lane) taken |= 1u << (bi >> 5);
-        if (k == 0) top0 = bv;
-        const float ek = __expf(bv - top0);
-        z += ek;
-        if (lane == k) {
-            wk = ek;
-            topi[t * TOPK + k] = bi;
-        }
-    }
-    if (lane < TOPK) topw[t * TOPK + lane] = wk / z;
-}
 __global__ void k_pf_count(const int* __restrict__ topi, int P, int* __restrict__ cnt) {
     const int p = blockIdx.x * blockDim.x + threadIdx.x;
     if (p < P) atomicAdd(&cnt[topi[p]], 1);
@@ -1725,7 +1693,7 @@ void Engine::prefill_pass(const std::vector<PfChunk>& chunks, bool staging, cons
                 else pf_hc_read(p, p.R, p.bo_a, p.inj_a, L.hc_norm[1], L.hc_down[1], L.hc_up[1], L.hc_inj[1], eps, p.mixed, p.inj_f, C, s);
                 if (p.moe_q8) quantize_q8_1(p.mixed, p.xq, N, C, s);   // else xh holds the hc read's f16 of mixed
                 pf_sgemm(p, L.router, NEXP + 1, N, p.mixed, C, p.logits, NEXP + 1);
-                k_pf_top10<<<(C + 7) / 8, 256, 0, s>>>(p.logits, C, p.topi, p.topw);
+                k_pf_top10<<<(C + 7) / 8, 256, 0, s>>>(p.logits, C, p.topi, p.topw, b.ring.err, b.router_bad, l);
                 ckc(cudaMemsetAsync(p.cnt, 0, NEXP * 4, s), "cnt");
                 k_pf_count<<<(P + 255) / 256, 256, 0, s>>>(p.topi, P, p.cnt);
                 if (b.route_cnt) route_count(p.topi, P, b.route_cnt + (size_t) (NL + l) * NEXP, s);

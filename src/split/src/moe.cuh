@@ -75,7 +75,8 @@ __global__ void __launch_bounds__(RR_THREADS) k_router_route(const float* __rest
                                                             float* __restrict__ logits, int* __restrict__ topi,
                                                             float* __restrict__ topw, Job* __restrict__ gu, Job* __restrict__ dn,
                                                             int* __restrict__ njobs, unsigned* __restrict__ counter,
-                                                            const ExpertCache ec, int layer, int* list, const ShexpUp su) {
+                                                            const ExpertCache ec, int layer, int* list, const ShexpUp su,
+                                                            unsigned* err, RouterBadRow* bad_row) {
     static_assert(RR_THREADS == Q8S_THREADS, "the shared expert's q8s blocks in the router's launch");
     constexpr int NC = N / 4 / 32 / RR_WPR, L = NEXP + 1;   // float4 chunks per lane
     const int nrr = (int) gridDim.x - su.blocks;              // the router's own blocks; the shared expert's after them
@@ -134,6 +135,7 @@ __global__ void __launch_bounds__(RR_THREADS) k_router_route(const float* __rest
 #pragma unroll
         for (int i = 0; i < NEXP / 32; ++i) v[i] = __ldcg(logits + (size_t) t * L + lane + 32 * i);
         unsigned taken = 0;
+        bool bad = false;
         float top0 = 0.f, z = 0.f, wk = 0.f;
 #pragma unroll 1
         for (int k = 0; k < TOPK; ++k) {
@@ -141,14 +143,15 @@ __global__ void __launch_bounds__(RR_THREADS) k_router_route(const float* __rest
             int bi = NEXP;
 #pragma unroll
             for (int i = 0; i < NEXP / 32; ++i)
-                if (!(taken >> i & 1u) && v[i] > bv) { bv = v[i]; bi = lane + 32 * i; }
+                if (!(taken >> i & 1u) && isfinite(v[i]) && v[i] > bv) { bv = v[i]; bi = lane + 32 * i; }
 #pragma unroll
             for (int o = 16; o; o >>= 1) {
                 const float ov = __shfl_xor_sync(0xffffffffu, bv, o);
                 const int oi = __shfl_xor_sync(0xffffffffu, bi, o);
                 if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
             }
-            if ((bi & 31) == lane) taken |= 1u << (bi >> 5);
+            bad |= bi == NEXP;
+            if (bi < NEXP && (bi & 31) == lane) taken |= 1u << (bi >> 5);
             if (k == 0) top0 = bv;
             const float ek = __expf(bv - top0);
             z += ek;
@@ -158,7 +161,14 @@ __global__ void __launch_bounds__(RR_THREADS) k_router_route(const float* __rest
                 ex[t * TOPK + k] = bi;
             }
         }
-        if (lane < TOPK) topw[t * TOPK + lane] = wk / z;
+        if (bad) {
+            if (lane == 0) router_bad_row(err, bad_row, 1u, layer, t);
+            // One pair per expert per row: even MAXT bad rows fit each Job's MAXT slots.
+            if (lane < TOPK) {
+                topi[t * TOPK + lane] = ex[t * TOPK + lane] = lane;
+                topw[t * TOPK + lane] = 0.f;
+            }
+        } else if (lane < TOPK) topw[t * TOPK + lane] = wk / z;
     }
     __syncthreads();
     // jobs: one per distinct expert, numbered in the order of each expert's first pick; a pair takes the next slot of

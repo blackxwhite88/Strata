@@ -14,6 +14,13 @@
 
 namespace fnx {
 
+// Written once per card, read by the host only after the stream finishes. path: 0 unset, 1 decode, 2 prompt.
+struct RouterBadRow {
+    unsigned path;
+    int layer;
+    int row;   // row within the decode window or prompt chunk
+};
+
 // one matrix (or one expert's matrix) applied to up to MAXT activation rows
 struct Job {
     int w;              // matrix index: an expert, or 0
@@ -287,7 +294,7 @@ void ple_post(float* R, const float* key, const float* value, const float* nk, c
 // then their ids) for moe_cache's copy.
 // sh_gu (rows sh_rows < 4096): the shared expert's gate|up over the q8_1 rows sh_y into sh_out, in the same launch
 void router_route(const float* W, const float* x, float* logits, int T, int* topi, float* topw, Job* jobs_gu, Job* jobs_dn,
-                  int* njobs, void* st, const ExpertCache* ec = nullptr, int layer = -1, int* list = nullptr, const Q8S* sh_gu = nullptr,
+                  int* njobs, unsigned* err, RouterBadRow* bad_row, void* st, const ExpertCache* ec = nullptr, int layer = -1, int* list = nullptr, const Q8S* sh_gu = nullptr,
                   int sh_rows = 0, const void* sh_y = nullptr, float* sh_out = nullptr);
 // gu rows of 2*ffs: [gate | up] (A: per-expert stacked rows, stride sa). sh_down (Q4_K experts only): the shared
 // expert's swiglu of sh_gu ([T][2 * sh_ffs]) and down (N rows) into sh_out (row stride N), in the same launch
@@ -342,7 +349,7 @@ struct Ring {
     bool peer = false;
     unsigned* err;       // bit 1: a peer's value never came; bit 2: a NaN or inf (on the fp16 ring: a value past its
                          // range); bit 4: an hc read's grid barrier timed out; bit 16: a NaN or inf among the head's
-                         // logits (the window's argmax)
+                         // logits (the window's argmax); bit 32: a router row has fewer than ten finite logits
     bool f32 = false;    // fp32 words (buffers sized for them) instead of fp16 pairs
     int rows = MAXT;     // the row capacity the buffers were sized for
     // a ring for chunk-sized sums (plain fp16 words and a flag per block and hop): this card's flags and the next's
