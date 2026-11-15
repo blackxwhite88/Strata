@@ -22,6 +22,7 @@ class ExpertCopy {
 public:
     ExpertCopyRequest* mailbox() const { return nullptr; }
     bool prefetch_enabled() const { return false; }
+    unsigned long long host_bytes() const { return 0; }
     static std::unique_ptr<ExpertCopy> create(const CardW& w, bool = false) {
         std::fprintf(stderr, "fnx: FNX_CACHE_COPY_ENGINE: CUDA only; using SM copies on card %d\n", w.dev);
         return nullptr;
@@ -38,6 +39,7 @@ class ExpertCopy {
     size_t stage_stride_ = 0;
     int staged_[EXPERT_COPY_CAP] = {}, staged_n_ = 0, staged_layer_ = -1;
     unsigned long long prefetched_ = 0, wasted_ = 0, guessed_ = 0, used_ = 0;
+    std::atomic<unsigned long long> host_bytes_{0};
     std::atomic<bool> stop_{false};
     std::thread worker_;
 
@@ -88,6 +90,7 @@ class ExpertCopy {
             staged_n_ = n;
             staged_layer_ = l;
             prefetched_ += (unsigned long long) n * (gb + db);
+            host_bytes_.fetch_add((unsigned long long) n * (gb + db), std::memory_order_relaxed);
             guessed_ += n;
             return;
         }
@@ -111,6 +114,7 @@ class ExpertCopy {
             }
         }
         check(cudaStreamSynchronize(stream_));
+        host_bytes_.fetch_add((unsigned long long) (n - used) * (gb + db), std::memory_order_relaxed);
         if (staged_n_) {
             const LayerW& L = w_.L[staged_layer_];
             wasted_ += (unsigned long long) (staged_n_ - used) * (L.gu_e_stride + L.down_e_stride);
@@ -166,6 +170,7 @@ public:
     }
     ExpertCopyRequest* mailbox() const { return device_; }
     bool prefetch_enabled() const { return stage_ != nullptr; }
+    unsigned long long host_bytes() const { return host_bytes_.load(std::memory_order_relaxed); }
     static std::unique_ptr<ExpertCopy> create(const CardW& w, bool prefetch = false) {
         static_assert(EXPERT_COPY_CAP == MAXT * TOPK, "mailbox capacity");
         std::unique_ptr<ExpertCopy> c(new ExpertCopy(w));

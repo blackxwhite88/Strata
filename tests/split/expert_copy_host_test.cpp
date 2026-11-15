@@ -74,6 +74,7 @@ int main() {
         const auto hb = fake_host_bytes.load(), db = fake_device_bytes.load();
         complete(p);  // all three guesses staged; no live slot touched
         assert(fake_host_bytes.load() - hb == 96);
+        assert(prefetch->host_bytes() == 96);
         p->prefetch = 0;
         p->count = 3;
         p->expert[0] = NEXP + 2;
@@ -84,6 +85,7 @@ int main() {
         assert(!p->status);
         assert(fake_host_bytes.load() - hb == 128);
         assert(fake_device_bytes.load() - db == 64);
+        assert(prefetch->host_bytes() == 128);  // staging D2D must not count as host traffic
         for (int i = 0; i < 3; ++i) {
             assert(!std::memcmp(p->dst[i], w.ec_host_gu[p->expert[i]], 16));
             assert(!std::memcmp(p->dst[i] + 16, w.ec_host_dn[p->expert[i]], 16));

@@ -23,6 +23,23 @@ void ck(cudaError_t e, const char* what) {
     if (e != cudaSuccess) throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
 }
 
+// Called only after the card's decode stream has finished. Instrumented windows
+// add two tiny timing kernels per layer and this counter read; compare both arms
+// with the flag on. DMA bytes include useful and wasted prefetch, not D2D staging.
+static void cache_copy_window(CardBuf& b, const char* kind, int T) {
+#if !FNX_27B
+    if (!b.cache_stats) return;
+    CacheCopyStats now{};
+    ck(cudaMemcpy(&now, b.cache_stats, sizeof now, cudaMemcpyDeviceToHost), "copy stats");
+    const unsigned long long bytes = b.expert_copy ? b.expert_copy->host_bytes() : now.host_bytes;
+    std::fprintf(stderr, "fnx: expert copy window card %d: %s rows %d, layers %llu, host bytes copied %llu, copy wait %.3f ms\n",
+                 b.dev, kind, T, now.layers - b.cache_stats_prev.layers, bytes - b.cache_host_bytes_prev,
+                 (now.wait_ns - b.cache_stats_prev.wait_ns) * 1e-6);
+    b.cache_stats_prev = now;
+    b.cache_host_bytes_prev = bytes;
+#endif
+}
+
 float h2f(uint16_t h) {
     const uint32_t s = (h >> 15) & 1, e = (h >> 10) & 31, m = h & 1023;
     uint32_t u;
@@ -907,6 +924,7 @@ std::vector<int> Engine::verify(const std::vector<int>& tokens) {
     float gpu_ms = 0.f;
     each([&](int c, CardBuf& b, const CardW&) {
         ck(cudaStreamSynchronize(b.st), "window sync");
+        cache_copy_window(b, "window", T);
         err |= h_.err[c];
         float ms = 0.f;
         ck(cudaEventElapsedTime(&ms, b.ev0, b.ev1), "event time");
@@ -1036,6 +1054,7 @@ std::vector<int> Engine::step(const std::vector<int>& lanes, const std::vector<i
     float gpu_ms = 0.f;
     each([&](int c, CardBuf& b, const CardW&) {
         ck(cudaStreamSynchronize(b.st), "step sync");
+        cache_copy_window(b, "step", T);
         err |= h_.err[c];
         float ms = 0.f;
         ck(cudaEventElapsedTime(&ms, b.ev0, b.ev1), "event time");
@@ -1338,6 +1357,7 @@ std::vector<int> Engine::verify_rows(const std::vector<int>& lanes, const std::v
     float gpu_ms = 0.f;
     each([&](int c, CardBuf& b, const CardW&) {
         ck(cudaStreamSynchronize(b.st), "verify_rows sync");
+        cache_copy_window(b, "verify_rows", T);
         err |= h_.err[c];
         float ms = 0.f;
         ck(cudaEventElapsedTime(&ms, b.ev0, b.ev1), "event time");

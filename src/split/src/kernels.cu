@@ -1850,6 +1850,17 @@ __global__ void __launch_bounds__(256) k_cache_copy(ExpertCache ec, int p, const
     }
 }
 #if !FNX_HIP
+__device__ unsigned long long cache_time_ns() {
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+__global__ void k_cache_measure_begin(CacheCopyStats* stats, const int* list, size_t bytes, bool dma) {
+    if (!dma) stats->host_bytes += (unsigned long long) list[0] * bytes;
+    ++stats->layers;
+    stats->start_ns = cache_time_ns();
+}
+__global__ void k_cache_measure_end(CacheCopyStats* stats) { stats->wait_ns += cache_time_ns() - stats->start_ns; }
 // The decode stream is the only planner. Snapshot its destinations, publish the
 // request through mapped memory, then hold that stream until DMA has completed.
 // No later CLOCK plan, arena lend, MoE reader or graph replay can reuse a slot
@@ -1901,18 +1912,22 @@ void cache_prefetch(int layer, int T, const ExpertCache& ec, const int* guess, E
 #endif
 }
 void moe_cache(int layer, size_t gu_stride, size_t dn_stride, const ExpertCache& ec, int* list, void* st, const Job* jobs, const int* njobs,
-               ExpertCopyRequest* copy) {
+               ExpertCopyRequest* copy, CacheCopyStats* stats) {
     const int p = ec.pool_of[layer];
     if (gu_stride != ec.dn_off[p] || ec.dn_off[p] + dn_stride != ec.slot_bytes[p])
         throw std::runtime_error("moe_cache: the layer's experts are not its pool's size");
     if (jobs) k_cache_plan<<<1, 32, 0, (cudaStream_t) st>>>(jobs, njobs, layer, ec, list);
 #if !FNX_HIP
+    if (stats) k_cache_measure_begin<<<1, 1, 0, (cudaStream_t) st>>>(stats, list, gu_stride + dn_stride, copy != nullptr);
     if (copy) {
         k_cache_copy_submit<<<1, 1, 0, (cudaStream_t) st>>>(ec, layer, list, copy);
         k_cache_copy_wait<<<1, 1, 0, (cudaStream_t) st>>>(copy);
     } else
 #endif
         k_cache_copy<<<160, 256, 0, (cudaStream_t) st>>>(ec, p, list, gu_stride, dn_stride);
+#if !FNX_HIP
+    if (stats) k_cache_measure_end<<<1, 1, 0, (cudaStream_t) st>>>(stats);
+#endif
     ck_launch("moe_cache");
 }
 namespace {

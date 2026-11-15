@@ -314,8 +314,11 @@ void moe_down_mma(const DW& A, size_t sa, const BigJob* jobs, const int* njobs, 
 // a decode window's layer with an ExpertCache (model.hpp): the experts router_route's plan listed copied in from RAM to
 // their new slots by a grid of the SMs (wide 16-byte reads; the MoE kernels' own reads over the link are latency-bound).
 // With jobs, the plan runs here first, a launch of its own (when router_route did not plan)
+struct CacheCopyStats {
+    unsigned long long start_ns = 0, host_bytes = 0, wait_ns = 0, layers = 0;
+};
 void moe_cache(int layer, size_t gu_stride, size_t dn_stride, const ExpertCache& ec, int* list, void* st, const Job* jobs = nullptr,
-               const int* njobs = nullptr, ExpertCopyRequest* copy = nullptr);
+               const int* njobs = nullptr, ExpertCopyRequest* copy = nullptr, CacheCopyStats* stats = nullptr);
 // Stage only the next layer's guessed misses, outside the live CLOCK slots.
 void cache_prefetch(int layer, int T, const ExpertCache& ec, const int* guess, ExpertCopyRequest* copy, void* st);
 // pool p's listed experts (list: device, its count then the experts' ids, each with its slot in ec.slot_of already) from

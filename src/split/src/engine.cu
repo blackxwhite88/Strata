@@ -214,6 +214,12 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             ck(cudaMemcpy(b->dense[T], &j, sizeof j, cudaMemcpyHostToDevice), "dense job");
         }
         if (w.ec.n_slots) b->cache_list = dalloc<int>(1 + P);
+#if !FNX_HIP
+        if (w.ec.n_slots && env_flag("FNX_CACHE_COPY_STATS")) b->cache_stats = dalloc<CacheCopyStats>(1);
+#else
+        if (env_flag("FNX_CACHE_COPY_STATS"))
+            std::fprintf(stderr, "fnx: FNX_CACHE_COPY_STATS: CUDA timer only; disabled on card %d\n", w.dev);
+#endif
         if (w.ec.n_slots && env_flag("FNX_CACHE_COPY_ENGINE"))
             b->expert_copy = ExpertCopy::create(w, env_flag("FNX_CACHE_PREFETCH"));
         else if (env_flag("FNX_CACHE_PREFETCH"))
@@ -973,7 +979,7 @@ void Engine::ffn_half(int T, int call, CardBuf& b, const CardW& w, const LayerW&
         }
         // the planned experts copied into their slots before the MoE kernels read the layer's tables
         if (live) moe_cache(l, L.gu_e_stride, L.down_e_stride, w.ec, b.cache_list, b.st, plan_in_router ? nullptr : b.jobs_gu, b.njobs,
-                            b.expert_copy ? b.expert_copy->mailbox() : nullptr);
+                            b.expert_copy ? b.expert_copy->mailbox() : nullptr, b.cache_stats);
         if (live && l + 1 < NL && b.expert_copy && b.expert_copy->prefetch_enabled())
             cache_prefetch(l + 1, T, w.ec, b.probe_guess + (size_t) (l + 1) * MAXT * TOPK, b.expert_copy->mailbox(), b.st);
     }

@@ -149,6 +149,9 @@ struct CardBuf {
     unsigned long long route_trace_cap = 0;
     int* cache_list = nullptr;       // moe_cache's scratch (with an ExpertCache)
     std::unique_ptr<ExpertCopy> expert_copy;  // FNX_CACHE_COPY_ENGINE; stopped before owned allocations are freed
+    CacheCopyStats* cache_stats = nullptr;   // FNX_CACHE_COPY_STATS, CUDA only; read after each decode window
+    CacheCopyStats cache_stats_prev{};
+    unsigned long long cache_host_bytes_prev = 0;
     // FNX_PREFETCH_PROBE=1, card 0: layer l + 1's router on layer l's FFN input, its top 10 per row (guess [NL][MAXT *
     // TOPK]) scored against layer l + 1's picks (cnt [7]: probe_counts)
     float* probe_logits = nullptr;
