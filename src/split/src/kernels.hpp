@@ -316,6 +316,8 @@ void moe_down_mma(const DW& A, size_t sa, const BigJob* jobs, const int* njobs, 
 // With jobs, the plan runs here first, a launch of its own (when router_route did not plan)
 void moe_cache(int layer, size_t gu_stride, size_t dn_stride, const ExpertCache& ec, int* list, void* st, const Job* jobs = nullptr,
                const int* njobs = nullptr, ExpertCopyRequest* copy = nullptr);
+// Stage only the next layer's guessed misses, outside the live CLOCK slots.
+void cache_prefetch(int layer, int T, const ExpertCache& ec, const int* guess, ExpertCopyRequest* copy, void* st);
 // pool p's listed experts (list: device, its count then the experts' ids, each with its slot in ec.slot_of already) from
 // their host copies into their slots, one kernel: the arena's fill
 void cache_copy(const ExpertCache& ec, int p, const int* list, void* st);

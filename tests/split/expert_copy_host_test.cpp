@@ -59,6 +59,44 @@ int main() {
             assert(!std::memcmp(q->dst[i] + 16, w.ec_host_dn[q->expert[i]], 16));
         }
     }
+    {
+        int slots[6] = {-1, 2, -1, -1, 0, -1}, out[EXPERT_COPY_CAP] = {};
+        const int guesses[] = {0, 0, 1, -1, 2, 6, 5, 4, 2};
+        const int n = copy_missing_guesses(guesses, 9, NEXP, 6, slots, out);
+        assert(n == 3 && out[0] == NEXP && out[1] == NEXP + 2 && out[2] == NEXP + 5);
+        auto prefetch = ExpertCopy::create(w, true);
+        assert(prefetch && prefetch->prefetch_enabled());
+        auto* p = prefetch->mailbox();
+        p->layer = 1;
+        p->prefetch = 1;
+        p->count = 3;
+        std::copy(out, out + n, p->expert);
+        const auto hb = fake_host_bytes.load(), db = fake_device_bytes.load();
+        complete(p);  // all three guesses staged; no live slot touched
+        assert(fake_host_bytes.load() - hb == 96);
+        p->prefetch = 0;
+        p->count = 3;
+        p->expert[0] = NEXP + 2;
+        p->expert[1] = NEXP + 3;  // not predicted: demand H2D
+        p->expert[2] = NEXP + 5;
+        for (int i = 0; i < 3; ++i) p->dst[i] = pool.data() + i * 32;
+        complete(p);
+        assert(!p->status);
+        assert(fake_host_bytes.load() - hb == 128);
+        assert(fake_device_bytes.load() - db == 64);
+        for (int i = 0; i < 3; ++i) {
+            assert(!std::memcmp(p->dst[i], w.ec_host_gu[p->expert[i]], 16));
+            assert(!std::memcmp(p->dst[i] + 16, w.ec_host_dn[p->expert[i]], 16));
+        }
+        // Empty predictions and empty demand lists still handshake and release
+        // staging for the following layer/window.
+        p->prefetch = 1;
+        p->count = 0;
+        complete(p);
+        p->prefetch = 0;
+        complete(p);
+        assert(!p->status);
+    } // summary: 3 miss guesses, 2 used, 96 bytes prefetched, 32 wasted
     q->layer = 0;
     q->count = 1;
     q->expert[0] = 0;

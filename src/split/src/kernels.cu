@@ -1870,6 +1870,7 @@ __global__ void k_cache_copy_submit(ExpertCache ec, int layer, const int* list, 
     if (n < 0 || n > EXPERT_COPY_CAP) asm volatile("trap;");
     q->layer = layer;
     q->count = n;
+    q->prefetch = 0;
     for (int i = 0; i < n; ++i) {
         const int g = list[1 + i], s = ec.slot_of[g];
         q->expert[i] = g;
@@ -1879,11 +1880,25 @@ __global__ void k_cache_copy_submit(ExpertCache ec, int layer, const int* list, 
     q->issued = q->issued + 1;
 }
 __global__ void k_cache_copy_wait(ExpertCopyRequest* q) { cache_copy_wait(q); }
+__global__ void k_cache_prefetch_submit(ExpertCache ec, int layer, int T, const int* guess, ExpertCopyRequest* q) {
+    cache_copy_wait(q);
+    q->layer = layer;
+    q->prefetch = 1;
+    q->count = copy_missing_guesses(guess, T * TOPK, layer * NEXP, NEXP, ec.slot_of + (size_t) layer * NEXP, q->expert);
+    __threadfence_system();
+    q->issued = q->issued + 1;
+}
 #endif
 }  // namespace
 void cache_copy(const ExpertCache& ec, int p, const int* list, void* st) {
     k_cache_copy<<<640, 256, 0, (cudaStream_t) st>>>(ec, p, list, ec.dn_off[p], ec.slot_bytes[p] - ec.dn_off[p]);
     ck_launch("cache_copy");
+}
+void cache_prefetch(int layer, int T, const ExpertCache& ec, const int* guess, ExpertCopyRequest* copy, void* st) {
+#if !FNX_HIP
+    k_cache_prefetch_submit<<<1, 1, 0, (cudaStream_t) st>>>(ec, layer, T, guess, copy);
+    ck_launch("cache_prefetch");
+#endif
 }
 void moe_cache(int layer, size_t gu_stride, size_t dn_stride, const ExpertCache& ec, int* list, void* st, const Job* jobs, const int* njobs,
                ExpertCopyRequest* copy) {

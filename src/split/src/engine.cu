@@ -214,7 +214,10 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
             ck(cudaMemcpy(b->dense[T], &j, sizeof j, cudaMemcpyHostToDevice), "dense job");
         }
         if (w.ec.n_slots) b->cache_list = dalloc<int>(1 + P);
-        if (w.ec.n_slots && env_flag("FNX_CACHE_COPY_ENGINE")) b->expert_copy = ExpertCopy::create(w);
+        if (w.ec.n_slots && env_flag("FNX_CACHE_COPY_ENGINE"))
+            b->expert_copy = ExpertCopy::create(w, env_flag("FNX_CACHE_PREFETCH"));
+        else if (env_flag("FNX_CACHE_PREFETCH"))
+            std::fprintf(stderr, "fnx: FNX_CACHE_PREFETCH requires FNX_CACHE_COPY_ENGINE=1 and an expert cache; disabled on card %d\n", w.dev);
         b->gu = dalloc<float>((size_t) (P + MAXT) * 2 * ffs);
         b->part = dalloc<float>((size_t) (P + MAXT) * N);
         b->sh_gu = dalloc<float>((size_t) MAXT * 2 * ffs);
@@ -232,10 +235,10 @@ Engine::Engine(Model& m, int max_ctx, int lanes) : m_(m), max_ctx_(max_ctx) {
         b->best_v = dalloc<float>(MAXT);
         b->best_i = dalloc<int>(MAXT);
         b->am_keys = dalloc<unsigned long long>(MAXT);
-        if (c == 0 && env_flag("FNX_PREFETCH_PROBE")) {
+        if ((c == 0 && env_flag("FNX_PREFETCH_PROBE")) || (b->expert_copy && b->expert_copy->prefetch_enabled())) {
             b->probe_logits = dalloc<float>((size_t) MAXT * NEXP);
             b->probe_guess = dalloc<int>((size_t) NL * MAXT * TOPK);
-            b->probe_cnt = dalloc<unsigned long long>(7);
+            if (c == 0 && env_flag("FNX_PREFETCH_PROBE")) b->probe_cnt = dalloc<unsigned long long>(7);
         }
         if (c == 0 && env_flag("FNX_ROUTE_COUNT")) {
             b->route_cnt = dalloc<unsigned>((size_t) 2 * NL * NEXP);
@@ -963,14 +966,16 @@ void Engine::ffn_half(int T, int call, CardBuf& b, const CardW& w, const LayerW&
             if (l > 0)
                 probe_score(b.topi, b.probe_guess + (size_t) l * MAXT * TOPK, T, w.ec.n_slots ? w.ec.slot_of + (size_t) l * NEXP : nullptr,
                             b.probe_cnt, b.st);
-            if (l + 1 < NL) {
-                gemv_f32(w.L[(size_t) l + 1].router, b.mixed, b.probe_logits, NEXP, N, T, b.st);
-                probe_guess(b.probe_logits, T, b.probe_guess + (size_t) (l + 1) * MAXT * TOPK, b.st);
-            }
+        }
+        if (b.probe_guess && l + 1 < NL) {
+            gemv_f32(w.L[(size_t) l + 1].router, b.mixed, b.probe_logits, NEXP, N, T, b.st);
+            probe_guess(b.probe_logits, T, b.probe_guess + (size_t) (l + 1) * MAXT * TOPK, b.st);
         }
         // the planned experts copied into their slots before the MoE kernels read the layer's tables
         if (live) moe_cache(l, L.gu_e_stride, L.down_e_stride, w.ec, b.cache_list, b.st, plan_in_router ? nullptr : b.jobs_gu, b.njobs,
                             b.expert_copy ? b.expert_copy->mailbox() : nullptr);
+        if (live && l + 1 < NL && b.expert_copy && b.expert_copy->prefetch_enabled())
+            cache_prefetch(l + 1, T, w.ec, b.probe_guess + (size_t) (l + 1) * MAXT * TOPK, b.expert_copy->mailbox(), b.st);
     }
     if (sh_in) moe_gate_up(L.gu_e, L.gu_e_stride, b.jobs_gu, b.njobs, P, b.xq, b.gu, b.st, &L.sh_down.s, ffs, b.sh_gu, b.part + (size_t) P * N);
     else moe_gate_up(L.gu_e, L.gu_e_stride, b.jobs_gu, b.njobs, P, b.xq, b.gu, b.st);

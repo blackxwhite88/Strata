@@ -22,4 +22,5 @@ class CopyHost(unittest.TestCase):
                 "-I", str(stage), "-I", str(ROOT / "src/split/src"),
                 str(ROOT / "tests/split/expert_copy_host_test.cpp"), "-o", str(exe),
             ], check=True, capture_output=True, text=True, timeout=30)
-            subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=10)
+            run = subprocess.run([str(exe)], check=True, capture_output=True, text=True, timeout=10)
+            self.assertIn("miss guesses 3, used 2, guess hit rate 66.67%, bytes prefetched 96, bytes wasted 32", run.stderr)

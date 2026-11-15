@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <atomic>
 
 using cudaError_t = int;
 using cudaStream_t = void*;
@@ -15,6 +16,7 @@ struct cudaDeviceProp {
 struct cudaPointerAttributes { int type = cudaMemoryTypeHost; void* hostPointer = nullptr; };
 inline bool fake_pinned = true;
 inline int fake_fail_copy = 0;
+inline std::atomic<size_t> fake_host_bytes{0}, fake_device_bytes{0};
 inline const char* cudaGetErrorString(int) { return "fake CUDA error"; }
 inline int cudaGetLastError() { return 0; }
 inline int cudaSetDevice(int) { return 0; }
@@ -32,8 +34,9 @@ inline int cudaFreeHost(void* p) { std::free(p); return 0; }
 inline int cudaHostGetDevicePointer(void** d, void* h, int) { *d = h; return 0; }
 inline int cudaMalloc(void** p, size_t n) { *p = std::malloc(n); return *p ? 0 : 1; }
 inline int cudaFree(void* p) { std::free(p); return 0; }
-inline int cudaMemcpyAsync(void* dst, const void* src, size_t n, int, cudaStream_t) {
+inline int cudaMemcpyAsync(void* dst, const void* src, size_t n, int kind, cudaStream_t) {
     if (fake_fail_copy) return fake_fail_copy;
     std::memcpy(dst, src, n);
+    (kind == cudaMemcpyHostToDevice ? fake_host_bytes : fake_device_bytes).fetch_add(n);
     return 0;
 }

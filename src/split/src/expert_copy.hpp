@@ -4,6 +4,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -20,7 +21,8 @@ namespace fnx {
 class ExpertCopy {
 public:
     ExpertCopyRequest* mailbox() const { return nullptr; }
-    static std::unique_ptr<ExpertCopy> create(const CardW& w) {
+    bool prefetch_enabled() const { return false; }
+    static std::unique_ptr<ExpertCopy> create(const CardW& w, bool = false) {
         std::fprintf(stderr, "fnx: FNX_CACHE_COPY_ENGINE: CUDA only; using SM copies on card %d\n", w.dev);
         return nullptr;
     }
@@ -32,6 +34,10 @@ class ExpertCopy {
     ExpertCopyRequest* host_ = nullptr;
     ExpertCopyRequest* device_ = nullptr;
     std::vector<const char*> gu_, dn_;
+    char* stage_ = nullptr;  // private staging, never a live cache slot
+    size_t stage_stride_ = 0;
+    int staged_[EXPERT_COPY_CAP] = {}, staged_n_ = 0, staged_layer_ = -1;
+    unsigned long long prefetched_ = 0, wasted_ = 0, guessed_ = 0, used_ = 0;
     std::atomic<bool> stop_{false};
     std::thread worker_;
 
@@ -68,16 +74,50 @@ class ExpertCopy {
         const int p = ec.pool_of[l];
         const size_t gb = w_.L[l].gu_e_stride, db = w_.L[l].down_e_stride;
         if (gb != ec.dn_off[p] || gb + db != ec.slot_bytes[p]) throw std::runtime_error("expert pool size mismatch");
+        if (host_->prefetch) {
+            if (!stage_ || staged_n_) throw std::runtime_error("prefetch staging is busy or disabled");
+            for (int i = 0; i < n; ++i) {
+                const int g = host_->expert[i];
+                if (g < l * NEXP || g >= (l + 1) * NEXP) throw std::runtime_error("invalid prefetch expert");
+                char* dst = stage_ + (size_t) i * stage_stride_;
+                check(cudaMemcpyAsync(dst, gu_[g], gb, cudaMemcpyHostToDevice, stream_));
+                check(cudaMemcpyAsync(dst + gb, dn_[g], db, cudaMemcpyHostToDevice, stream_));
+                staged_[i] = g;
+            }
+            check(cudaStreamSynchronize(stream_));
+            staged_n_ = n;
+            staged_layer_ = l;
+            prefetched_ += (unsigned long long) n * (gb + db);
+            guessed_ += n;
+            return;
+        }
+        int used = 0;
         for (int i = 0; i < n; ++i) {
             const int g = host_->expert[i];
             char* dst = host_->dst[i];
             const uintptr_t off = (uintptr_t) dst - (uintptr_t) ec.pool[p];
             if (g < l * NEXP || g >= (l + 1) * NEXP || off >= (size_t) ec.n[p] * ec.slot_bytes[p] || off % ec.slot_bytes[p])
                 throw std::runtime_error("invalid expert copy destination");
-            check(cudaMemcpyAsync(dst, gu_[g], gb, cudaMemcpyHostToDevice, stream_));
-            check(cudaMemcpyAsync(dst + gb, dn_[g], db, cudaMemcpyHostToDevice, stream_));
+            int hit = -1;
+            if (staged_layer_ == l)
+                for (int j = 0; j < staged_n_; ++j)
+                    if (staged_[j] == g) { hit = j; break; }
+            if (hit >= 0) {
+                check(cudaMemcpyAsync(dst, stage_ + (size_t) hit * stage_stride_, gb + db, cudaMemcpyDeviceToDevice, stream_));
+                ++used;
+            } else {
+                check(cudaMemcpyAsync(dst, gu_[g], gb, cudaMemcpyHostToDevice, stream_));
+                check(cudaMemcpyAsync(dst + gb, dn_[g], db, cudaMemcpyHostToDevice, stream_));
+            }
         }
         check(cudaStreamSynchronize(stream_));
+        if (staged_n_) {
+            const LayerW& L = w_.L[staged_layer_];
+            wasted_ += (unsigned long long) (staged_n_ - used) * (L.gu_e_stride + L.down_e_stride);
+            used_ += used;
+        }
+        staged_n_ = 0;
+        staged_layer_ = -1;
     }
     void run() noexcept {
         const cudaError_t set = cudaSetDevice(w_.dev);
@@ -109,11 +149,24 @@ public:
     ~ExpertCopy() {
         stop_.store(true, std::memory_order_relaxed);
         if (worker_.joinable()) worker_.join();
+        if (stage_) {
+            // A completed decode window always consumes its last prediction.
+            // Account for an interrupted window's outstanding staging as waste.
+            if (staged_n_) {
+                const LayerW& L = w_.L[staged_layer_];
+                wasted_ += (unsigned long long) staged_n_ * (L.gu_e_stride + L.down_e_stride);
+            }
+            std::fprintf(stderr, "fnx: expert prefetch summary card %d: miss guesses %llu, used %llu, guess hit rate %.2f%%, "
+                                 "bytes prefetched %llu, bytes wasted %llu\n", w_.dev, guessed_, used_,
+                         guessed_ ? 100.0 * used_ / guessed_ : 0.0, prefetched_, wasted_);
+            cudaFree(stage_);
+        }
         if (stream_) cudaStreamDestroy(stream_);
         if (host_) cudaFreeHost(host_);
     }
     ExpertCopyRequest* mailbox() const { return device_; }
-    static std::unique_ptr<ExpertCopy> create(const CardW& w) {
+    bool prefetch_enabled() const { return stage_ != nullptr; }
+    static std::unique_ptr<ExpertCopy> create(const CardW& w, bool prefetch = false) {
         static_assert(EXPERT_COPY_CAP == MAXT * TOPK, "mailbox capacity");
         std::unique_ptr<ExpertCopy> c(new ExpertCopy(w));
         try {
@@ -123,6 +176,19 @@ public:
                 throw std::runtime_error("requires mapped UVA host memory and a CUDA copy engine (sm_60+)");
             host_aliases(w.ec_host_gu, w, false, c->gu_);
             host_aliases(w.ec_host_dn, w, true, c->dn_);
+            if (prefetch) {
+                for (const LayerW& L : w.L)
+                    c->stage_stride_ = std::max(c->stage_stride_, L.gu_e_stride + L.down_e_stride);
+                const cudaError_t e = cudaMalloc((void**) &c->stage_, EXPERT_COPY_CAP * c->stage_stride_);
+                if (e != cudaSuccess) {
+                    cudaGetLastError();
+                    std::fprintf(stderr, "fnx: FNX_CACHE_PREFETCH: staging allocation failed (%s); demand copies only on card %d\n",
+                                 cudaGetErrorString(e), w.dev);
+                } else {
+                    std::fprintf(stderr, "fnx: FNX_CACHE_PREFETCH: %zu bytes of private staging on card %d\n",
+                                 EXPERT_COPY_CAP * c->stage_stride_, w.dev);
+                }
+            }
             check(cudaStreamCreateWithFlags(&c->stream_, cudaStreamNonBlocking));
             check(cudaHostAlloc((void**) &c->host_, sizeof(ExpertCopyRequest), cudaHostAllocMapped | cudaHostAllocPortable));
             new (c->host_) ExpertCopyRequest();
