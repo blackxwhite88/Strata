@@ -1849,17 +1849,55 @@ __global__ void __launch_bounds__(256) k_cache_copy(ExpertCache ec, int p, const
         else reinterpret_cast<uint4*>(at + ec.dn_off[p])[o - ug] = reinterpret_cast<const uint4*>(ec.host_dn[g])[o - ug];
     }
 }
+#if !FNX_HIP
+// The decode stream is the only planner. Snapshot its destinations, publish the
+// request through mapped memory, then hold that stream until DMA has completed.
+// No later CLOCK plan, arena lend, MoE reader or graph replay can reuse a slot
+// while the worker writes it. Capture records kernels only; it never wakes the
+// worker. Aligned mailbox flags use loads/stores, not host/device RMW atomics.
+__device__ void cache_copy_wait(ExpertCopyRequest* q) {
+    const unsigned seq = q->issued;
+    const unsigned long long start = clock64();
+    while (q->done != seq) {
+        if (clock64() - start > q->timeout_ticks) asm volatile("trap;");
+    }
+    __threadfence_system();
+    if (q->status) asm volatile("trap;");
+}
+__global__ void k_cache_copy_submit(ExpertCache ec, int layer, const int* list, ExpertCopyRequest* q) {
+    cache_copy_wait(q);  // also makes reuse of the mailbox safe
+    const int p = ec.pool_of[layer], n = list[0];
+    if (n < 0 || n > EXPERT_COPY_CAP) asm volatile("trap;");
+    q->layer = layer;
+    q->count = n;
+    for (int i = 0; i < n; ++i) {
+        const int g = list[1 + i], s = ec.slot_of[g];
+        q->expert[i] = g;
+        q->dst[i] = ec.pool[p] + (size_t) (s - ec.s0[p]) * ec.slot_bytes[p];
+    }
+    __threadfence_system();
+    q->issued = q->issued + 1;
+}
+__global__ void k_cache_copy_wait(ExpertCopyRequest* q) { cache_copy_wait(q); }
+#endif
 }  // namespace
 void cache_copy(const ExpertCache& ec, int p, const int* list, void* st) {
     k_cache_copy<<<640, 256, 0, (cudaStream_t) st>>>(ec, p, list, ec.dn_off[p], ec.slot_bytes[p] - ec.dn_off[p]);
     ck_launch("cache_copy");
 }
-void moe_cache(int layer, size_t gu_stride, size_t dn_stride, const ExpertCache& ec, int* list, void* st, const Job* jobs, const int* njobs) {
+void moe_cache(int layer, size_t gu_stride, size_t dn_stride, const ExpertCache& ec, int* list, void* st, const Job* jobs, const int* njobs,
+               ExpertCopyRequest* copy) {
     const int p = ec.pool_of[layer];
     if (gu_stride != ec.dn_off[p] || ec.dn_off[p] + dn_stride != ec.slot_bytes[p])
         throw std::runtime_error("moe_cache: the layer's experts are not its pool's size");
     if (jobs) k_cache_plan<<<1, 32, 0, (cudaStream_t) st>>>(jobs, njobs, layer, ec, list);
-    k_cache_copy<<<160, 256, 0, (cudaStream_t) st>>>(ec, p, list, gu_stride, dn_stride);
+#if !FNX_HIP
+    if (copy) {
+        k_cache_copy_submit<<<1, 1, 0, (cudaStream_t) st>>>(ec, layer, list, copy);
+        k_cache_copy_wait<<<1, 1, 0, (cudaStream_t) st>>>(copy);
+    } else
+#endif
+        k_cache_copy<<<160, 256, 0, (cudaStream_t) st>>>(ec, p, list, gu_stride, dn_stride);
     ck_launch("moe_cache");
 }
 namespace {

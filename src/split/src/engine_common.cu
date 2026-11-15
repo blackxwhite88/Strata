@@ -484,6 +484,9 @@ Engine::~Engine() {
         for (auto& v : b->batch_cache)
             for (CardBuf::GraphEntry& e : v)
                 if (e.exec) cudaGraphExecDestroy(e.exec);
+#if !FNX_27B
+        b->expert_copy.reset();
+#endif
     }
     std::vector<std::function<void()>> o = take_owned();
     for (auto it = o.rbegin(); it != o.rend(); ++it) (*it)();
