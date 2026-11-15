@@ -1883,7 +1883,11 @@ __global__ void k_cache_copy_submit(ExpertCache ec, int layer, const int* list, 
     q->count = n;
     q->prefetch = 0;
     for (int i = 0; i < n; ++i) {
-        const int g = list[1 + i], s = ec.slot_of[g];
+        const int g = list[1 + i];
+        if (g < layer * NEXP || g >= (layer + 1) * NEXP) asm volatile("trap;");
+        const int s = ec.slot_of[g];
+        if (s < ec.s0[p] + ec.lent[p] || s >= ec.s0[p] + ec.n[p]) asm volatile("trap;");
+        if (ec.owner[s] != g) asm volatile("trap;");
         q->expert[i] = g;
         q->dst[i] = ec.pool[p] + (size_t) (s - ec.s0[p]) * ec.slot_bytes[p];
     }
