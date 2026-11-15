@@ -1,0 +1,62 @@
+[
+  {
+    "file": "strata-tp-window2-window-original.py",
+    "source": "strata-tp-window2/evidence/window-original.py",
+    "source_sha256": "8839041aec8e72cd3bb95a6e4238f5f4f335462970b56a9402088d3757cb53e7"
+  },
+  {
+    "file": "strata-tp-window2-window2.py",
+    "source": "strata-tp-window2/evidence/window2.py",
+    "source_sha256": "e94d83ef7a608641f70bd0eb90997757325d54e64b39046fb55ce5e010cc2bd3"
+  },
+  {
+    "file": "strata-tp-window3-window3.py",
+    "source": "strata-tp-window3/evidence/window3.py",
+    "source_sha256": "ea052e5f1704fedd7e9e3160d259bbeec0c13028677a094a84e76ad0c3a9642e"
+  },
+  {
+    "file": "strata-tp-window4-window4.py",
+    "source": "strata-tp-window4/evidence/window4.py",
+    "source_sha256": "48bdd213bdf83a1b75515078b03b99be14725aab86357b20a2b9d3b9491c842b"
+  },
+  {
+    "file": "strata-tp-final-final.py",
+    "source": "strata-tp-final/evidence/preparation/final.py",
+    "source_sha256": "0454e9798828072231f93324c9387c4332b17a0e26476d8a8c84777d6d2b7660"
+  },
+  {
+    "file": "strata-tp-final-final-B.py",
+    "source": "strata-tp-final/evidence/preparation/final-B.py",
+    "source_sha256": "add10ea5fd52e82b5f1d18da6ed775bd9c9a254c59c476448e4f2e57ee24311a"
+  },
+  {
+    "file": "strata-tp-final-r2-retry.py",
+    "source": "strata-tp-final/evidence/preparation/r2-retry.py",
+    "source_sha256": "2794338460456c86705dc2473ad3b1dc60a4135b8325c3be844aae498d6fbc53"
+  },
+  {
+    "file": "strata-r2-cache-x-window.py",
+    "source": "strata-r2-cache/evidence/x-window.py",
+    "source_sha256": "6d11a0b2d221ad992981e3bd095231f0084c6966d133c6cc52d940bee375764c"
+  },
+  {
+    "file": "strata-r2-cache-x-window2.py",
+    "source": "strata-r2-cache/evidence/x-window2.py",
+    "source_sha256": "9cb327945fd58d9bebfdcae293a1a9636f3cd94958e8a40d44e1300c3fca2463"
+  },
+  {
+    "file": "strata-r2-x3-x-window3.py",
+    "source": "strata-r2-x3/evidence/x-window3.py",
+    "source_sha256": "ce329f11f5ef54bcc4bed1b078fe7c53d87adef2d5a69880c37aabb4a186f953"
+  },
+  {
+    "file": "strata-r2-x4-x-window4.py",
+    "source": "strata-r2-x4/evidence/x-window4.py",
+    "source_sha256": "cad6e503a09e4f3dabcc1611ecc160279dfd127c96bdf754048a69fd2acf77df"
+  },
+  {
+    "file": "strata-r2-x5-x-window5.py",
+    "source": "strata-r2-x5/evidence/x-window5.py",
+    "source_sha256": "b6dab95b8baa8f46c3a8438ef8afdac430730f51d2d33e97a761328bd219ae11"
+  }
+]
