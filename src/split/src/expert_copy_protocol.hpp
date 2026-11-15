@@ -9,7 +9,7 @@ constexpr int EXPERT_COPY_CAP = 160;  // MAXT * TOPK, checked by the engine
 struct alignas(64) ExpertCopyRequest {
     alignas(64) volatile unsigned issued = 0;
     alignas(64) volatile unsigned done = 0;
-    unsigned status = 0;
+    volatile unsigned status = 0;
     int layer = 0, count = 0, prefetch = 0;
     int expert[EXPERT_COPY_CAP] = {};
     char* dst[EXPERT_COPY_CAP] = {};

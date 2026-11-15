@@ -177,7 +177,8 @@ public:
         try {
             cudaDeviceProp prop{};
             check(cudaGetDeviceProperties(&prop, w.dev));
-            if (!prop.canMapHostMemory || !prop.unifiedAddressing || prop.asyncEngineCount < 1 || prop.major < 6 || sizeof(void*) != 8)
+            if (!prop.canMapHostMemory || !prop.unifiedAddressing || prop.asyncEngineCount < 1 || prop.major < 6 ||
+                prop.clockRate <= 0 || sizeof(void*) != 8)
                 throw std::runtime_error("requires mapped UVA host memory and a CUDA copy engine (sm_60+)");
             host_aliases(w.ec_host_gu, w, false, c->gu_);
             host_aliases(w.ec_host_dn, w, true, c->dn_);

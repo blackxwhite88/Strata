@@ -42,9 +42,15 @@ int main() {
     assert(service);
     ExpertCopyRequest* q = service->mailbox();
     // Repeat requests and evict/reuse exactly the same destination. Check both
-    // matrices after the completion flag; this also exercises sequence wrap.
-    copy_request_store(&q->issued, UINT_MAX - 1);
-    copy_request_store(&q->done, UINT_MAX - 1);
+    // matrices after the completion flag. The sequence equality also works when
+    // its unsigned counter wraps (check separately from the live worker).
+    ExpertCopyRequest wrap{};
+    copy_request_store(&wrap.issued, UINT_MAX);
+    copy_request_store(&wrap.done, UINT_MAX);
+    copy_request_store(&wrap.issued, copy_request_load(&wrap.issued) + 1);
+    assert(copy_request_load(&wrap.issued) != copy_request_load(&wrap.done));
+    copy_request_store(&wrap.done, copy_request_load(&wrap.issued));
+    assert(copy_request_load(&wrap.issued) == copy_request_load(&wrap.done));
     for (int round = 0; round < 100; ++round) {
         q->layer = round % NL;
         q->count = round % 5;
