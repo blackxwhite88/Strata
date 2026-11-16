@@ -23,6 +23,22 @@
 
 <p align="center"><sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.pl.md">Polski</a></sub></p>
 
+> ## Fork note: dual RTX 2080 Ti serving research
+>
+> This fork carries a record of testing Strata on two modified 22 GB RTX 2080 Ti cards (Turing SM75, NVLink, DDR3 host RAM) serving Qwen3.8-Flash-Next IQ4_XS, with vision on, at long context and up to four concurrent streams.
+>
+> **What we did**
+> - Ported and fixed a tensor-parallel (TP) split engine for SM75 and added a router NaN guard and better error context.
+> - Compared it with the native layer split: native with stage trimming and piped MTP drafting (recipe R2) was 3.27x faster on two warm 128k conversations, so TP is parked.
+> - Found and measured a host-memory slowdown that appears under load (about 9.7 to 3.8 GB/s per card, recovering after about 10 minutes idle). The trigger is still unproven.
+> - Tried copy-engine, prefetch and read-interleave speedups for TP (prefetch made things worse), a concurrent-prefill variant (rejected: non-finite logits) and NVLink relay ideas (no help for a layer split).
+> - Traced conversation-cache eviction to the slot count and tested two final recipes: **2 streams at 256k** and **4 streams at 128k**, both with a 64 GiB cache.
+>
+> **Where to look**
+> - [`docs/rig-research/`](docs/rig-research/README.md): the full story, [findings](docs/rig-research/FINDINGS.md), [recipes](docs/rig-research/RECIPES.md), [method and safety rules](docs/rig-research/METHOD.md), sanitized reports and drivers.
+> - Branch `tp-speed-experiments`: the optional TP speed switches (experiments only; prefetch is not recommended).
+> - `main` is unchanged from upstream. Results are from one machine and are historical measurements, not guarantees.
+
 **Free, open source, and yours to run.** Use Strata on your desktop or with your favorite coding tools. No account needed.
 
 ## Models
